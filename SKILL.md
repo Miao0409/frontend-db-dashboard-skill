@@ -1,20 +1,26 @@
 ---
 name: frontend-db-dashboard
-description: Connect to the cable voiceprint MySQL database and retrieve frontend display data. Use when Codex needs to query the remote sound/cable voiceprint database for dashboard statistics, category rankings, time distributions, latest samples, enterprise-entered realtime data, realtime sample details, or to explain the frontend database API and required fields.
+description: Work with the cable voiceprint data pipeline and MySQL database. Use when Codex needs to validate data-center JSON manifests, ingest audio index metadata, query pending samples for inference, submit algorithm results, return frontend sample display data including audio and spectrum resources, query dashboard statistics, or explain the cable voiceprint database/API field design.
 ---
 
-# 前端数据库展示
+# 电缆声纹数据链路
 
 ## 核心用途
 
-使用这个 skill 时，直接连接电缆声纹检测数据库，获取前端展示所需信息：
+使用这个 skill 时，围绕这条链路工作：
 
-1. 历史环境声纹大屏统计。
-2. 企业输入的实时采集数据列表。
-3. 单条实时样本详情，包括 4 通道、人工标注和模型结果。
-4. 数据库字段和接口口径说明。
+```text
+数据中心 JSON 配置文件
+-> 接口服务接收和校验
+-> 数据库保存样本、音频索引、4 通道信息
+-> 算法获取待推理样本
+-> 算法结果和故障诊断写回数据库
+-> 前端按 sample_uid 获取音频、频谱、特征和诊断结果
+```
 
-## 快速查询
+这个 skill 保留历史大屏查询能力，但优先使用新的电缆声纹数据接入和前端展示口径。
+
+## 快速连接
 
 默认连接：
 
@@ -25,37 +31,9 @@ description: Connect to the cable voiceprint MySQL database and retrieve fronten
 用户：remote_user
 ```
 
-如需覆盖连接参数，设置环境变量：
-
-```bash
-DB_HOST=192.168.10.116 DB_PORT=3306 DB_USER=remote_user DB_PASSWORD='密码' DB_NAME=noise_classification
-```
+可用环境变量覆盖：`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`。
 
 ## 常用命令
-
-历史大屏统计：
-
-```bash
-python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py dashboard --top-limit 10 --recent-limit 20
-```
-
-企业输入数据列表：
-
-```bash
-python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py realtime --limit 50
-```
-
-按设备或站点筛选企业输入数据：
-
-```bash
-python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py realtime --device-id 设备编号 --site-code 站点编号
-```
-
-查询单条实时样本详情：
-
-```bash
-python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py detail 样本唯一编号
-```
 
 检查数据库连接：
 
@@ -63,32 +41,83 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py health
 ```
 
+校验数据中心 JSON 配置文件：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py validate-manifest /path/to/manifest.json
+```
+
+试运行入库，不写数据库：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py ingest-manifest /path/to/manifest.json
+```
+
+确认入库：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py ingest-manifest /path/to/manifest.json --commit
+```
+
+给算法查询待推理样本：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py pending-for-inference --limit 20
+```
+
+试运行算法结果回写，不写数据库：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-result /path/to/result.json
+```
+
+确认算法结果回写：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-result /path/to/result.json --commit
+```
+
+查询甲方前端单条样本展示数据：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py sample-display SAMPLE_ID
+```
+
+兼容历史大屏：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py dashboard --top-limit 10 --recent-limit 20
+```
+
 ## 工作流
 
-1. 先运行 `health` 确认能连库。
-2. 用户要“大屏、统计、排行、前端展示”时，运行 `dashboard`。
-3. 用户要“企业输入的数据、实时采集、上传记录、清单导入记录”时，运行 `realtime`。
-4. 用户给出某个样本唯一编号时，运行 `detail`。
-5. 需要解释字段或接口时，读取 `references/frontend_db_schema.md`。
+1. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
+2. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
+3. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
+4. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
+5. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
+6. 甲方按样本编号查展示数据时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
 
-## 输出口径
+## 字段口径
 
-`dashboard` 返回：
+数据中心主要提供：
 
-1. `summary`：数据总量、总时长、类别数、时间范围。
-2. `category_cards`：一级环境/场景统计。
-3. `top_categories`：类别排行。
-4. `time_distribution`：按年、月、日统计。
-5. `recent_samples`：最新样本。
+```text
+采集基础信息、设备与通道信息、采样参数、音频文件索引、现场环境
+```
 
-`realtime` 返回：
+我方系统生成或回填：
 
-1. `summary`：企业输入数据总数、已上传数、已推理数、失败数、故障数。
-2. `items`：企业输入样本列表，含采样、存储、设备、电缆工况、故障、标注、模型摘要。
+```text
+处理状态、算法结果、故障标签、人工确认结果、频谱图/波形图/特征资源地址
+```
 
-`detail` 返回：
+前端播放音频需要 `audio_uri`。数据库内部的 `created_at`、`updated_at` 可以保留，但不要作为给甲方解释的展示字段。
 
-1. `item`：样本主信息。
-2. `channels`：4 通道与麦克风位置。
-3. `annotations`：人工标注和复核记录。
-4. `model_results`：模型推理历史。
+## 参考资料
+
+需要字段、JSON 示例、接口返回格式和数据库表建议时，读取：
+
+```text
+/Users/a1111/.codex/skills/frontend-db-dashboard/references/frontend_db_schema.md
+```

@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import json
 import os
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -41,6 +42,49 @@ GRANULARITY_SQL = {
     "day": "DATE_FORMAT(acquisition_time, '%Y-%m-%d')",
 }
 
+MANIFEST_REQUIRED_FIELDS = [
+    "sample_uid",
+    "collect_time",
+    "device_id",
+    "channel_count",
+    "sample_rate",
+    "bit_depth",
+    "duration_sec",
+    "file_name",
+    "file_path",
+    "file_sha256",
+    "audio_uri",
+    "site_code",
+    "site_name",
+    "site_environment",
+]
+
+RESULT_REQUIRED_FIELDS = [
+    "sample_uid",
+    "model_name",
+    "model_version",
+    "algorithm_result",
+    "confidence_score",
+]
+
+STATUS_TO_DB = {
+    "待处理": "QUEUED",
+    "已上传": "UPLOADED",
+    "处理中": "PROCESSING",
+    "已推理": "INFERRED",
+    "已完成": "INFERRED",
+    "处理失败": "FAILED",
+    "待人工复核": "INFERRED",
+}
+
+STATUS_TO_DISPLAY = {
+    "UPLOADED": "已上传",
+    "QUEUED": "待处理",
+    "PROCESSING": "处理中",
+    "INFERRED": "已推理",
+    "FAILED": "处理失败",
+}
+
 
 def db_config() -> dict[str, Any]:
     return {
@@ -64,9 +108,76 @@ def print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
 
 
+def load_json_records(path: str) -> list[dict[str, Any]]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        records = data
+    elif isinstance(data, dict):
+        for key in ("samples", "items", "records", "data"):
+            if isinstance(data.get(key), list):
+                records = data[key]
+                break
+        else:
+            records = [data]
+    else:
+        raise ValueError("JSON 顶层必须是对象、对象数组，或包含 samples/items/records/data 数组的对象")
+    bad = [i for i, item in enumerate(records, start=1) if not isinstance(item, dict)]
+    if bad:
+        raise ValueError(f"JSON 第 {bad[0]} 条不是对象")
+    return records
+
+
+def to_json_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=json_default)
+
+
+def parse_bool(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    if str(value).strip().lower() in {"1", "true", "yes", "y", "是", "故障"}:
+        return 1
+    if str(value).strip().lower() in {"0", "false", "no", "n", "否", "正常"}:
+        return 0
+    return None
+
+
+def db_status(value: Any, default: str = "QUEUED") -> str:
+    if value is None or value == "":
+        return default
+    text = str(value)
+    return STATUS_TO_DB.get(text, text)
+
+
+def display_status(value: Any) -> Any:
+    if value is None:
+        return None
+    return STATUS_TO_DISPLAY.get(str(value), value)
+
+
+def normalize_channel_storage_mode(value: Any) -> str:
+    text = str(value or "单文件四通道")
+    if text in {"单文件四通道", "multi_channel_audio"}:
+        return "multi_channel_audio"
+    if text in {"四个单通道文件", "four_mono_audio"}:
+        return "four_mono_audio"
+    if text in {"压缩包", "archive"}:
+        return "archive"
+    return "multi_channel_audio"
+
+
 class DbClient:
     def __init__(self) -> None:
         self.config = db_config()
+        self._column_cache: dict[str, set[str]] = {}
+        self._table_cache: dict[str, bool] = {}
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         conn = mysql.connector.connect(**self.config)
@@ -78,6 +189,64 @@ class DbClient:
             return rows
         finally:
             conn.close()
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        conn = mysql.connector.connect(**self.config)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            conn.commit()
+            rowcount = cur.rowcount
+            cur.close()
+            return rowcount
+        finally:
+            conn.close()
+
+    def table_exists(self, table: str) -> bool:
+        if table not in self._table_cache:
+            rows = self.query(
+                """
+                SELECT COUNT(*) AS count
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                """,
+                (table,),
+            )
+            self._table_cache[table] = bool(rows and rows[0]["count"])
+        return self._table_cache[table]
+
+    def table_columns(self, table: str) -> set[str]:
+        if table not in self._column_cache:
+            rows = self.query(
+                """
+                SELECT COLUMN_NAME
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                """,
+                (table,),
+            )
+            self._column_cache[table] = {row["COLUMN_NAME"] for row in rows}
+        return self._column_cache[table]
+
+    def upsert(self, table: str, row: dict[str, Any], key_columns: tuple[str, ...]) -> int:
+        if not self.table_exists(table):
+            raise RuntimeError(f"数据表不存在：{table}")
+        columns = self.table_columns(table)
+        filtered = {k: v for k, v in row.items() if k in columns and v is not None}
+        if not filtered:
+            return 0
+        update_columns = [col for col in filtered if col not in key_columns]
+        placeholders = ", ".join(["%s"] * len(filtered))
+        column_sql = ", ".join(f"`{col}`" for col in filtered)
+        if update_columns:
+            update_sql = ", ".join(f"`{col}` = VALUES(`{col}`)" for col in update_columns)
+        else:
+            update_sql = f"`{key_columns[0]}` = VALUES(`{key_columns[0]}`)"
+        sql = (
+            f"INSERT INTO `{table}` ({column_sql}) VALUES ({placeholders}) "
+            f"ON DUPLICATE KEY UPDATE {update_sql}"
+        )
+        return self.execute(sql, tuple(filtered.values()))
 
     def health(self) -> dict[str, Any]:
         rows = self.query("SELECT VERSION() AS version, DATABASE() AS database_name")
@@ -187,7 +356,7 @@ class DbClient:
         for col, val in [
             ("s.device_id", device_id),
             ("s.site_code", site_code),
-            ("s.processing_status", status),
+            ("s.processing_status", db_status(status, "") if status else None),
             ("s.sample_uid", sample_uid),
         ]:
             if val:
@@ -198,12 +367,13 @@ class DbClient:
             f"""
             SELECT
                 COUNT(*) AS total_records,
-                COALESCE(SUM(CASE WHEN s.processing_status = 'UPLOADED' THEN 1 ELSE 0 END), 0) AS uploaded_count,
+                COALESCE(SUM(CASE WHEN s.processing_status IN ('UPLOADED', 'QUEUED') THEN 1 ELSE 0 END), 0) AS pending_count,
+                COALESCE(SUM(CASE WHEN s.processing_status = 'PROCESSING' THEN 1 ELSE 0 END), 0) AS processing_count,
                 COALESCE(SUM(CASE WHEN s.processing_status = 'INFERRED' THEN 1 ELSE 0 END), 0) AS inferred_count,
                 COALESCE(SUM(CASE WHEN s.processing_status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_count,
                 COALESCE(SUM(CASE WHEN fe.is_fault = 1 THEN 1 ELSE 0 END), 0) AS fault_count,
-                MIN(s.acquisition_start_time) AS min_acquisition_start_time,
-                MAX(s.acquisition_start_time) AS max_acquisition_start_time
+                MIN(s.acquisition_start_time) AS min_collect_time,
+                MAX(s.acquisition_start_time) AS max_collect_time
             FROM realtime_audio_sample s
             LEFT JOIN realtime_fault_event fe ON fe.sample_uid = s.sample_uid
             WHERE {where_sql}
@@ -215,45 +385,36 @@ class DbClient:
             SELECT
                 s.sample_uid,
                 s.batch_id,
-                s.source_system,
+                s.collect_task_id,
                 s.device_id,
+                s.device_name,
                 s.site_code,
-                s.acquisition_start_time,
+                s.site_name,
+                s.service_environment AS site_environment,
+                s.acquisition_start_time AS collect_time,
                 s.duration_sec,
                 s.sample_rate,
-                s.channels,
+                s.bit_depth,
+                s.channels AS channel_count,
                 s.file_name,
                 s.file_path,
                 s.audio_uri,
-                s.processing_status,
-                s.cable_id,
-                s.cable_name,
-                s.phase,
+                s.file_sha256,
+                s.processing_status AS process_status,
                 fe.is_fault,
-                fe.fault_l1,
-                fe.fault_l2,
-                fe.voiceprint_label,
-                fe.internal_fault_type,
+                fe.voiceprint_label AS fault_label,
+                fe.fault_l1 AS fault_type,
                 fe.fault_severity,
-                fa.annotator_id,
-                fa.annotator_name,
-                fa.annotation_status,
-                fa.is_final_label,
                 mr.model_name,
                 mr.model_version,
-                mr.top1_label,
-                mr.top1_prob,
+                mr.top1_label AS algorithm_result,
+                mr.top1_prob AS confidence_score,
+                mr.probability_json AS topk_result_json,
                 mr.final_diagnosis,
+                mr.feature_path,
                 mr.need_review
             FROM realtime_audio_sample s
             LEFT JOIN realtime_fault_event fe ON fe.sample_uid = s.sample_uid
-            LEFT JOIN realtime_fault_annotation fa
-                ON fa.id = (
-                    SELECT fa2.id FROM realtime_fault_annotation fa2
-                    WHERE fa2.sample_uid = s.sample_uid
-                    ORDER BY fa2.is_final_label DESC, fa2.annotation_time DESC, fa2.id DESC
-                    LIMIT 1
-                )
             LEFT JOIN realtime_model_result mr
                 ON mr.id = (
                     SELECT mr2.id FROM realtime_model_result mr2
@@ -267,13 +428,15 @@ class DbClient:
             """,
             tuple(params),
         )
+        for item in items:
+            item["process_status_display"] = display_status(item.get("process_status"))
         return {"summary": summary, "items": items}
 
     def detail(self, sample_uid: str) -> dict[str, Any]:
         item = self.realtime(limit=1, sample_uid=sample_uid)["items"]
         channels = self.query(
             """
-            SELECT channel_index, mic_id, mic_model, position_label, x_m, y_m, z_m, channel_role,
+            SELECT channel_index AS channel_no, position_label AS channel_name,
                    channel_file_path, channel_valid
             FROM realtime_audio_channel
             WHERE sample_uid = %s
@@ -281,24 +444,12 @@ class DbClient:
             """,
             (sample_uid,),
         )
-        annotations = self.query(
-            """
-            SELECT annotator_id, annotator_name, annotator_role, annotator_org, annotation_time,
-                   annotation_source, annotation_status, fault_l1, fault_l2, fault_l3,
-                   defect_type_id, interference_type_id, fault_severity, label_confidence,
-                   annotation_text, reviewer_id, reviewer_name, review_time, review_comment,
-                   is_final_label
-            FROM realtime_fault_annotation
-            WHERE sample_uid = %s
-            ORDER BY is_final_label DESC, annotation_time DESC, id DESC
-            """,
-            (sample_uid,),
-        )
         model_results = self.query(
             """
             SELECT model_name, model_version, inference_time, latency_ms,
-                   top1_label, top1_prob, top2_label, top2_prob, top3_label, top3_prob,
-                   probability_json, final_diagnosis, result_explain, feature_version,
+                   top1_label AS algorithm_result, top1_prob AS confidence_score,
+                   top2_label, top2_prob, top3_label, top3_prob,
+                   probability_json AS topk_result_json, final_diagnosis, result_explain,
                    feature_path, need_review
             FROM realtime_model_result
             WHERE sample_uid = %s
@@ -306,17 +457,323 @@ class DbClient:
             """,
             (sample_uid,),
         )
+        fault_results = self.query(
+            """
+            SELECT is_fault, voiceprint_label AS fault_label, fault_l1 AS fault_type,
+                   internal_fault_type, fault_severity, diagnosis_basis
+            FROM realtime_fault_event
+            WHERE sample_uid = %s
+            """,
+            (sample_uid,),
+        )
         return {
             "sample_uid": sample_uid,
             "item": item[0] if item else None,
             "channels": channels,
-            "annotations": annotations,
+            "fault_results": fault_results,
             "model_results": model_results,
+        }
+
+    def validate_manifest_records(self, records: list[dict[str, Any]], check_files: bool = False) -> dict[str, Any]:
+        errors: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for idx, record in enumerate(records, start=1):
+            sample_uid = record.get("sample_uid")
+            missing = [field for field in MANIFEST_REQUIRED_FIELDS if record.get(field) in (None, "")]
+            if missing:
+                errors.append({"index": idx, "sample_uid": sample_uid, "missing_fields": missing})
+            if sample_uid:
+                if sample_uid in seen:
+                    errors.append({"index": idx, "sample_uid": sample_uid, "error": "sample_uid 在 JSON 内重复"})
+                seen.add(sample_uid)
+            channel_count = int(record.get("channel_count") or 0)
+            channels = record.get("channels")
+            if channel_count != 4:
+                warnings.append({"index": idx, "sample_uid": sample_uid, "warning": "channel_count 不是 4"})
+            if isinstance(channels, list):
+                channel_nos = [ch.get("channel_no") for ch in channels if isinstance(ch, dict)]
+                if len(set(channel_nos)) != len(channel_nos):
+                    errors.append({"index": idx, "sample_uid": sample_uid, "error": "channels 中 channel_no 重复"})
+                if any(no in (None, "") for no in channel_nos):
+                    errors.append({"index": idx, "sample_uid": sample_uid, "error": "channels 中存在缺失 channel_no 的通道"})
+            else:
+                warnings.append({"index": idx, "sample_uid": sample_uid, "warning": "未提供 channels 明细，将按 channel_count 自动生成通道记录"})
+            if check_files and record.get("file_path") and not Path(str(record["file_path"])).exists():
+                warnings.append({"index": idx, "sample_uid": sample_uid, "warning": "file_path 在当前机器不可访问"})
+        return {
+            "ok": not errors,
+            "total_records": len(records),
+            "required_fields": MANIFEST_REQUIRED_FIELDS,
+            "errors": errors,
+            "warnings": warnings,
+            "preview": records[:3],
+        }
+
+    def ingest_manifest(self, records: list[dict[str, Any]], commit: bool = False) -> dict[str, Any]:
+        validation = self.validate_manifest_records(records)
+        actions: list[dict[str, Any]] = []
+        if validation["errors"]:
+            return {"ok": False, "commit": commit, "validation": validation, "actions": actions}
+        for record in records:
+            sample_uid = record["sample_uid"]
+            sample_row = {
+                "sample_uid": sample_uid,
+                "batch_id": record.get("batch_id") or f"BATCH_{datetime.now().strftime('%Y%m%d')}",
+                "source_system": "data_center",
+                "collect_task_id": record.get("collect_task_id"),
+                "acquisition_start_time": record.get("collect_time"),
+                "duration_sec": record.get("duration_sec"),
+                "sample_rate": record.get("sample_rate"),
+                "bit_depth": record.get("bit_depth"),
+                "channels": record.get("channel_count"),
+                "audio_format": record.get("audio_format") or "wav",
+                "channel_storage_mode": normalize_channel_storage_mode(record.get("channel_storage_mode")),
+                "file_name": record.get("file_name"),
+                "file_path": record.get("file_path"),
+                "audio_uri": record.get("audio_uri"),
+                "file_sha256": record.get("file_sha256"),
+                "file_size_bytes": record.get("file_size_bytes"),
+                "feature_path": record.get("feature_path"),
+                "processing_status": db_status(record.get("process_status"), "QUEUED"),
+                "device_id": record.get("device_id"),
+                "device_name": record.get("device_name"),
+                "install_location": record.get("device_location"),
+                "site_code": record.get("site_code"),
+                "site_name": record.get("site_name"),
+                "service_environment": record.get("site_environment"),
+                "weather": record.get("weather"),
+                "channel_map_json": to_json_text(record.get("channel_map_json")),
+                "environment_json": to_json_text(
+                    {
+                        "noise_environment_label": record.get("noise_environment_label"),
+                        "site_remark": record.get("site_remark"),
+                    }
+                ),
+                "raw_metadata_json": to_json_text(record),
+            }
+            channels = record.get("channels")
+            if not isinstance(channels, list):
+                channels = [
+                    {"channel_no": idx, "channel_name": f"通道{idx}"}
+                    for idx in range(1, int(record.get("channel_count") or 4) + 1)
+                ]
+            actions.append({"sample_uid": sample_uid, "action": "upsert realtime_audio_sample"})
+            if commit:
+                self.upsert("realtime_audio_sample", sample_row, ("sample_uid",))
+            for channel in channels:
+                if not isinstance(channel, dict):
+                    continue
+                channel_row = {
+                    "sample_uid": sample_uid,
+                    "channel_index": channel.get("channel_no"),
+                    "position_label": channel.get("channel_name"),
+                    "channel_file_path": channel.get("channel_file_path"),
+                    "channel_valid": 1,
+                }
+                actions.append(
+                    {
+                        "sample_uid": sample_uid,
+                        "action": "upsert realtime_audio_channel",
+                        "channel_no": channel.get("channel_no"),
+                    }
+                )
+                if commit:
+                    self.upsert("realtime_audio_channel", channel_row, ("sample_uid", "channel_index"))
+        return {"ok": True, "commit": commit, "total_records": len(records), "actions": actions}
+
+    def pending_for_inference(self, limit: int) -> dict[str, Any]:
+        items = self.query(
+            f"""
+            SELECT
+                s.sample_uid,
+                s.acquisition_start_time AS collect_time,
+                s.device_id,
+                s.device_name,
+                s.site_code,
+                s.site_name,
+                s.service_environment AS site_environment,
+                s.duration_sec,
+                s.sample_rate,
+                s.bit_depth,
+                s.channels AS channel_count,
+                s.file_name,
+                s.file_path,
+                s.audio_uri,
+                s.file_sha256,
+                s.channel_storage_mode,
+                s.channel_map_json,
+                s.processing_status AS process_status
+            FROM realtime_audio_sample s
+            WHERE s.processing_status IN ('UPLOADED', 'QUEUED')
+            ORDER BY s.acquisition_start_time ASC, s.id ASC
+            LIMIT {int(limit)}
+            """
+        )
+        for item in items:
+            channels = self.query(
+                """
+                SELECT channel_index AS channel_no, position_label AS channel_name,
+                       channel_file_path, channel_valid
+                FROM realtime_audio_channel
+                WHERE sample_uid = %s
+                ORDER BY channel_index
+                """,
+                (item["sample_uid"],),
+            )
+            item["channels"] = channels
+            item["process_status_display"] = display_status(item.get("process_status"))
+        return {"total_records": len(items), "items": items}
+
+    def submit_result_records(self, records: list[dict[str, Any]], commit: bool = False) -> dict[str, Any]:
+        errors: list[dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
+        for idx, record in enumerate(records, start=1):
+            missing = [field for field in RESULT_REQUIRED_FIELDS if record.get(field) in (None, "")]
+            if missing:
+                errors.append({"index": idx, "sample_uid": record.get("sample_uid"), "missing_fields": missing})
+        if errors:
+            return {"ok": False, "commit": commit, "errors": errors, "actions": actions}
+
+        for record in records:
+            sample_uid = record["sample_uid"]
+            topk = record.get("topk_result_json")
+            if isinstance(topk, list) and topk:
+                top1 = topk[0] if isinstance(topk[0], dict) else {}
+                top2 = topk[1] if len(topk) > 1 and isinstance(topk[1], dict) else {}
+                top3 = topk[2] if len(topk) > 2 and isinstance(topk[2], dict) else {}
+            else:
+                top1, top2, top3 = {}, {}, {}
+            result_row = {
+                "sample_uid": sample_uid,
+                "model_name": record.get("model_name"),
+                "model_version": record.get("model_version"),
+                "inference_time": record.get("inference_time") or datetime.now().isoformat(sep=" ", timespec="milliseconds"),
+                "latency_ms": record.get("latency_ms"),
+                "top1_label": top1.get("label") or record.get("algorithm_result"),
+                "top1_prob": top1.get("score") or record.get("confidence_score"),
+                "top2_label": top2.get("label"),
+                "top2_prob": top2.get("score"),
+                "top3_label": top3.get("label"),
+                "top3_prob": top3.get("score"),
+                "probability_json": to_json_text(topk),
+                "final_diagnosis": record.get("final_diagnosis"),
+                "result_explain": record.get("result_explain"),
+                "feature_path": record.get("feature_uri") or record.get("feature_path"),
+                "need_review": parse_bool(record.get("need_review")),
+            }
+            fault_row = {
+                "sample_uid": sample_uid,
+                "is_fault": parse_bool(record.get("is_fault")),
+                "fault_l1": record.get("fault_type"),
+                "voiceprint_label": record.get("fault_label") or record.get("algorithm_result"),
+                "internal_fault_type": record.get("internal_fault_type"),
+                "fault_severity": record.get("fault_severity"),
+                "diagnosis_basis": record.get("final_diagnosis"),
+            }
+            actions.append({"sample_uid": sample_uid, "action": "insert realtime_model_result"})
+            actions.append({"sample_uid": sample_uid, "action": "upsert realtime_fault_event"})
+            actions.append({"sample_uid": sample_uid, "action": "update realtime_audio_sample.processing_status"})
+            if commit:
+                self.upsert("realtime_model_result", result_row, ("sample_uid", "model_name", "model_version"))
+                self.upsert("realtime_fault_event", fault_row, ("sample_uid",))
+                status = "INFERRED" if not record.get("process_status") else db_status(record.get("process_status"))
+                self.execute(
+                    "UPDATE realtime_audio_sample SET processing_status = %s WHERE sample_uid = %s",
+                    (status, sample_uid),
+                )
+        return {"ok": True, "commit": commit, "total_records": len(records), "actions": actions}
+
+    def feature_resources(self, sample_uid: str) -> dict[str, Any]:
+        resources = {
+            "spectrum_uri": None,
+            "waveform_uri": None,
+            "feature_uri": None,
+            "feature_path": None,
+        }
+        if self.table_exists("voiceprint_feature_resource"):
+            cols = self.table_columns("voiceprint_feature_resource")
+            wanted = [col for col in ("spectrum_uri", "waveform_uri", "feature_uri", "feature_path") if col in cols]
+            if wanted:
+                rows = self.query(
+                    f"""
+                    SELECT {", ".join(wanted)}
+                    FROM voiceprint_feature_resource
+                    WHERE sample_uid = %s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (sample_uid,),
+                )
+                if rows:
+                    resources.update(rows[0])
+        if not resources["feature_path"]:
+            rows = self.query(
+                """
+                SELECT feature_path
+                FROM realtime_model_result
+                WHERE sample_uid = %s AND feature_path IS NOT NULL
+                ORDER BY inference_time DESC, id DESC
+                LIMIT 1
+                """,
+                (sample_uid,),
+            )
+            if rows:
+                resources["feature_path"] = rows[0]["feature_path"]
+                resources["feature_uri"] = rows[0]["feature_path"]
+        return resources
+
+    def sample_display(self, sample_uid: str) -> dict[str, Any]:
+        detail = self.detail(sample_uid)
+        item = detail["item"] or {}
+        latest_model = detail["model_results"][0] if detail["model_results"] else {}
+        latest_fault = detail["fault_results"][0] if detail["fault_results"] else {}
+        features = self.feature_resources(sample_uid)
+        return {
+            "sample_uid": sample_uid,
+            "collect_time": item.get("collect_time"),
+            "device_id": item.get("device_id"),
+            "device_name": item.get("device_name"),
+            "site_code": item.get("site_code"),
+            "site_name": item.get("site_name"),
+            "site_environment": item.get("site_environment"),
+            "process_status": display_status(item.get("process_status")),
+            "audio": {
+                "file_name": item.get("file_name"),
+                "file_path": item.get("file_path"),
+                "audio_uri": item.get("audio_uri"),
+                "file_sha256": item.get("file_sha256"),
+            },
+            "sampling": {
+                "sample_rate": item.get("sample_rate"),
+                "bit_depth": item.get("bit_depth"),
+                "duration_sec": item.get("duration_sec"),
+                "channel_count": item.get("channel_count"),
+            },
+            "channels": detail["channels"],
+            "features": features,
+            "algorithm": {
+                "model_name": latest_model.get("model_name"),
+                "model_version": latest_model.get("model_version"),
+                "algorithm_result": latest_model.get("algorithm_result") or item.get("algorithm_result"),
+                "confidence_score": latest_model.get("confidence_score") or item.get("confidence_score"),
+                "topk_result_json": latest_model.get("topk_result_json") or item.get("topk_result_json"),
+                "need_review": latest_model.get("need_review") or item.get("need_review"),
+            },
+            "diagnosis": {
+                "is_fault": latest_fault.get("is_fault") if latest_fault else item.get("is_fault"),
+                "fault_label": latest_fault.get("fault_label") if latest_fault else item.get("fault_label"),
+                "fault_type": latest_fault.get("fault_type") if latest_fault else item.get("fault_type"),
+                "fault_severity": latest_fault.get("fault_severity") if latest_fault else item.get("fault_severity"),
+                "manual_label": None,
+                "final_diagnosis": latest_model.get("final_diagnosis") or item.get("final_diagnosis"),
+            },
+            "raw_detail": detail,
         }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="查询前端展示数据库数据")
+    parser = argparse.ArgumentParser(description="电缆声纹前端展示与数据链路工具")
     sub = parser.add_subparsers(dest="command", required=True)
 
     dash = sub.add_parser("dashboard")
@@ -331,8 +788,26 @@ def main() -> None:
     real.add_argument("--status")
     real.add_argument("--sample-uid")
 
-    detail = sub.add_parser("detail")
-    detail.add_argument("sample_uid")
+    detail_parser = sub.add_parser("detail")
+    detail_parser.add_argument("sample_uid")
+
+    sample_display = sub.add_parser("sample-display")
+    sample_display.add_argument("sample_uid")
+
+    validate = sub.add_parser("validate-manifest")
+    validate.add_argument("json_path")
+    validate.add_argument("--check-files", action="store_true")
+
+    ingest = sub.add_parser("ingest-manifest")
+    ingest.add_argument("json_path")
+    ingest.add_argument("--commit", action="store_true")
+
+    pending = sub.add_parser("pending-for-inference")
+    pending.add_argument("--limit", type=int, default=20)
+
+    submit = sub.add_parser("submit-result")
+    submit.add_argument("json_path")
+    submit.add_argument("--commit", action="store_true")
 
     sub.add_parser("health")
 
@@ -346,6 +821,16 @@ def main() -> None:
         print_json(client.realtime(args.limit, args.device_id, args.site_code, args.status, args.sample_uid))
     elif args.command == "detail":
         print_json(client.detail(args.sample_uid))
+    elif args.command == "sample-display":
+        print_json(client.sample_display(args.sample_uid))
+    elif args.command == "validate-manifest":
+        print_json(client.validate_manifest_records(load_json_records(args.json_path), args.check_files))
+    elif args.command == "ingest-manifest":
+        print_json(client.ingest_manifest(load_json_records(args.json_path), args.commit))
+    elif args.command == "pending-for-inference":
+        print_json(client.pending_for_inference(args.limit))
+    elif args.command == "submit-result":
+        print_json(client.submit_result_records(load_json_records(args.json_path), args.commit))
 
 
 if __name__ == "__main__":

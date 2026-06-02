@@ -1,4 +1,4 @@
 interface:
-  display_name: "前端数据库展示"
-  short_description: "连接电缆声纹检测数据库并获取前端展示统计与企业输入数据"
-  default_prompt: "Use $frontend-db-dashboard to connect to the database and retrieve frontend display data."
+  display_name: "电缆声纹数据链路"
+  short_description: "校验数据中心 JSON、连接声纹数据库、查询待推理样本并返回前端展示数据"
+  default_prompt: "Use $frontend-db-dashboard to validate a cable voiceprint JSON manifest, query the database, or return frontend sample display data."
