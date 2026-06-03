@@ -723,6 +723,47 @@ class DbClient:
                 resources["feature_uri"] = rows[0]["feature_path"]
         return resources
 
+    def database_overview(self, recent_limit: int = 10) -> dict[str, Any]:
+        tables = [
+            "noise_classification_db",
+            "realtime_audio_sample",
+            "realtime_audio_channel",
+            "realtime_fault_event",
+            "realtime_model_result",
+            "voiceprint_feature_resource",
+        ]
+        table_status = []
+        for table in tables:
+            exists = self.table_exists(table)
+            count = None
+            if exists:
+                count = self.query(f"SELECT COUNT(*) AS count FROM `{table}`")[0]["count"]
+            table_status.append({"table": table, "exists": exists, "record_count": count})
+
+        historical = None
+        if self.table_exists("noise_classification_db"):
+            dash = self.dashboard(top_limit=5, recent_limit=recent_limit, granularity="year")
+            historical = {
+                "summary": dash["summary"],
+                "category_cards": dash["category_cards"],
+                "top_categories": dash["top_categories"],
+                "recent_samples": dash["recent_samples"],
+            }
+
+        realtime = None
+        if self.table_exists("realtime_audio_sample"):
+            realtime = self.realtime(limit=recent_limit)
+
+        return {
+            "meta": {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "database": self.config["database"],
+            },
+            "tables": table_status,
+            "historical_dashboard": historical,
+            "realtime_samples": realtime,
+        }
+
     def sample_display(self, sample_uid: str) -> dict[str, Any]:
         detail = self.detail(sample_uid)
         item = detail["item"] or {}
@@ -776,48 +817,60 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="电缆声纹前端展示与数据链路工具")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    dash = sub.add_parser("dashboard")
+    overview = sub.add_parser("database-overview", help="展示数据库整体内容概览、表数量和最新样本")
+    overview.add_argument("--recent-limit", type=int, default=10)
+
+    dash = sub.add_parser("dashboard", help="展示历史环境声纹大屏统计")
     dash.add_argument("--top-limit", type=int, default=10)
     dash.add_argument("--recent-limit", type=int, default=20)
     dash.add_argument("--granularity", choices=sorted(GRANULARITY_SQL), default="year")
 
-    real = sub.add_parser("realtime")
+    real = sub.add_parser("realtime", help="展示企业实时接入样本列表")
     real.add_argument("--limit", type=int, default=50)
     real.add_argument("--device-id")
     real.add_argument("--site-code")
     real.add_argument("--status")
     real.add_argument("--sample-uid")
 
-    detail_parser = sub.add_parser("detail")
+    list_samples = sub.add_parser("list-samples", help="展示数据库中的实时样本列表，等同 realtime")
+    list_samples.add_argument("--limit", type=int, default=50)
+    list_samples.add_argument("--device-id")
+    list_samples.add_argument("--site-code")
+    list_samples.add_argument("--status")
+    list_samples.add_argument("--sample-uid")
+
+    detail_parser = sub.add_parser("detail", help="查询单条样本数据库详情")
     detail_parser.add_argument("sample_uid")
 
-    sample_display = sub.add_parser("sample-display")
+    sample_display = sub.add_parser("sample-display", help="按 sample_uid 返回前端展示数据")
     sample_display.add_argument("sample_uid")
 
-    validate = sub.add_parser("validate-manifest")
+    validate = sub.add_parser("validate-manifest", help="校验数据中心 JSON 配置文件")
     validate.add_argument("json_path")
     validate.add_argument("--check-files", action="store_true")
 
-    ingest = sub.add_parser("ingest-manifest")
+    ingest = sub.add_parser("ingest-manifest", help="试运行或确认入库数据中心 JSON")
     ingest.add_argument("json_path")
     ingest.add_argument("--commit", action="store_true")
 
-    pending = sub.add_parser("pending-for-inference")
+    pending = sub.add_parser("pending-for-inference", help="给算法查询待推理样本")
     pending.add_argument("--limit", type=int, default=20)
 
-    submit = sub.add_parser("submit-result")
+    submit = sub.add_parser("submit-result", help="试运行或确认回写算法结果")
     submit.add_argument("json_path")
     submit.add_argument("--commit", action="store_true")
 
-    sub.add_parser("health")
+    sub.add_parser("health", help="检查数据库连接")
 
     args = parser.parse_args()
     client = DbClient()
     if args.command == "health":
         print_json(client.health())
+    elif args.command == "database-overview":
+        print_json(client.database_overview(args.recent_limit))
     elif args.command == "dashboard":
         print_json(client.dashboard(args.top_limit, args.recent_limit, args.granularity))
-    elif args.command == "realtime":
+    elif args.command in {"realtime", "list-samples"}:
         print_json(client.realtime(args.limit, args.device_id, args.site_code, args.status, args.sample_uid))
     elif args.command == "detail":
         print_json(client.detail(args.sample_uid))

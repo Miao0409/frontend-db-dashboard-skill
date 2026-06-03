@@ -244,6 +244,12 @@ skill 脚本会优先兼容这些已有表。未来如果新增 `voiceprint_feat
 
 ## 7. 前端接口口径
 
+数据库整体概览：
+
+```text
+GET /api/database-overview
+```
+
 前端列表：
 
 ```text
@@ -297,3 +303,13 @@ GET /api/samples/{sample_uid}
 ```text
 GET /api/frontend-dashboard
 ```
+
+skill 命令对应关系：
+
+| 需求 | 命令 |
+| --- | --- |
+| 展示数据库整体内容 | `database-overview` |
+| 展示历史环境声纹大屏 | `dashboard` |
+| 展示企业实时接入样本列表 | `list-samples` 或 `realtime` |
+| 按 `sample_uid` 展示单条样本 | `sample-display SAMPLE_ID` |
+| 查询单条样本数据库原始详情 | `detail SAMPLE_ID` |

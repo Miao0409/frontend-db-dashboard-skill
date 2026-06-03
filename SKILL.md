@@ -41,6 +41,30 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py health
 ```
 
+展示数据库整体内容：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py database-overview --recent-limit 10
+```
+
+展示历史环境声纹大屏统计：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py dashboard --top-limit 10 --recent-limit 20
+```
+
+展示企业实时接入样本列表：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --limit 50
+```
+
+按设备、站点、状态筛选样本列表：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --device-id 设备编号 --site-code 站点编号 --status 待处理
+```
+
 校验数据中心 JSON 配置文件：
 
 ```bash
@@ -83,20 +107,17 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py sample-display SAMPLE_ID
 ```
 
-兼容历史大屏：
-
-```bash
-python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py dashboard --top-limit 10 --recent-limit 20
-```
-
 ## 工作流
 
-1. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
-2. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
-3. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
-4. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
-5. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
-6. 甲方按样本编号查展示数据时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
+1. 用户要看数据库整体内容时，运行 `database-overview`。
+2. 用户要看历史大屏统计时，运行 `dashboard`。
+3. 用户要看企业接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
+4. 用户给出某个 `sample_uid` 时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
+5. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
+6. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
+7. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
+8. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
+9. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
 
 ## 字段口径
 
