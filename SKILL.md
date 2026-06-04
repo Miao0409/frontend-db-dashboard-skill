@@ -26,7 +26,7 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
 ```
 
-该接口使用“Linux 上的 wav 文件路径 + JSON 元数据”模式：wav 需要先放到 Linux 服务器，JSON 里用 `file_path` 指向该 wav；接口会写入 MySQL 中文库 `电缆声纹检测库`，并把 4 通道时序数据写入 TDengine 中文库 `电缆声纹时序库`。
+该接口使用“Linux 上的 wav 文件路径 + JSON 元数据”模式：wav 需要先放到 Linux 服务器；可以是 1 个四通道 wav，也可以是 4 个单通道 wav。JSON 里用 `file_path` 指向单文件 wav 或样本文件夹；四单通道模式再用 `channels[].channel_file_path` 指向每个通道文件。接口会写入 MySQL 中文库 `电缆声纹检测库`，并把 4 通道时序数据写入 TDengine 中文库 `电缆声纹时序库`。
 
 ## 快速连接
 
@@ -120,6 +120,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 ```bash
 python3 /home/hzjq/ml_pipeline/process/setup_cable_voiceprint_databases.py
 python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_protocol.py
+python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.py
 ```
 
 ## 工作流

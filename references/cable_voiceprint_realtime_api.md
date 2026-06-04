@@ -11,12 +11,19 @@ Content-Type: application/json
 
 ## 传输模式
 
-第一版采用“Linux 文件路径 + JSON 元数据”：
+第一版采用“Linux 文件路径 + JSON 元数据”，支持两种 wav 形态：
 
 ```text
-调用方先把 4 通道 wav 放到 Linux 服务器
+方式一：1 个 wav 文件内部就是 4 通道
+方式二：4 个单通道 wav 文件合在一起表示 1 条 4 通道样本
+```
+
+基本链路：
+
+```text
+调用方先把 wav 放到 Linux 服务器
 -> JSON 里 file_path 填 Linux 上的真实路径
--> 接口读取 wav
+-> 接口读取 wav，校验通道数、采样率、位深和 file_sha256
 -> 写 MySQL 中文库：电缆声纹检测库
 -> 解析 4 通道波形写 TDengine 中文库：电缆声纹时序库
 ```
@@ -29,7 +36,8 @@ Content-Type: application/json
 
 - 能访问 `http://192.168.10.116:8000`。
 - wav 文件已经在 Linux 服务器上，接口服务能读取。
-- wav 是 4 通道。
+- 单文件模式：wav 必须真实包含 4 个通道。
+- 四单通道模式：每个 wav 必须是单通道，并且 4 个文件采样率、位深、采样点数量一致。
 - JSON 中 `sample_rate`、`bit_depth`、`channel_count` 和 wav 真实参数一致。
 - `sample_uid` 唯一；重复样本必须保持 `file_sha256` 一致。
 
@@ -63,10 +71,29 @@ site_environment
 audio_uri
 file_size_bytes
 channel_map
+channels
 manual_annotation
 ```
 
-## curl 示例
+## file_sha256 计算
+
+单文件模式直接计算该 wav 文件的 SHA256：
+
+```text
+file_sha256 = sha256(SAMPLE_001.wav)
+```
+
+四单通道模式先分别计算 4 个通道文件的 SHA256，再按通道顺序合并：
+
+```text
+ch1_sha256 = sha256(ch1.wav)
+ch2_sha256 = sha256(ch2.wav)
+ch3_sha256 = sha256(ch3.wav)
+ch4_sha256 = sha256(ch4.wav)
+file_sha256 = sha256(ch1_sha256 + "\n" + ch2_sha256 + "\n" + ch3_sha256 + "\n" + ch4_sha256)
+```
+
+## 单文件四通道 curl 示例
 
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
@@ -110,6 +137,73 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   }'
 ```
 
+## 四个单通道 wav curl 示例
+
+```bash
+curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "protocol_version": "1.0",
+    "request_id": "REQ_SAMPLE_002",
+    "sample_uid": "SAMPLE_002",
+    "collect_time": "2026-06-04T10:20:30+08:00",
+    "device_id": "DEVICE_001",
+    "site_code": "SITE_001",
+    "site_name": "某变电站",
+    "site_environment": "电缆沟",
+    "channel_count": 4,
+    "sample_rate": 48000,
+    "bit_depth": 16,
+    "duration_sec": 10,
+    "audio_format": "wav",
+    "channel_storage_mode": "四个单通道文件",
+    "file_name": "SAMPLE_002",
+    "file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/",
+    "audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/",
+    "file_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "channels": [
+      {
+        "channel_index": 1,
+        "mic_id": "MIC-01",
+        "position_label": "通道1",
+        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch1.wav",
+        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch1.wav"
+      },
+      {
+        "channel_index": 2,
+        "mic_id": "MIC-02",
+        "position_label": "通道2",
+        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch2.wav",
+        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch2.wav"
+      },
+      {
+        "channel_index": 3,
+        "mic_id": "MIC-03",
+        "position_label": "通道3",
+        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch3.wav",
+        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch3.wav"
+      },
+      {
+        "channel_index": 4,
+        "mic_id": "MIC-04",
+        "position_label": "通道4",
+        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch4.wav",
+        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch4.wav"
+      }
+    ],
+    "manual_annotation": {
+      "is_labeled": true,
+      "is_fault": true,
+      "fault_type": "内源故障",
+      "fault_label": "局部放电",
+      "fault_severity": "中等",
+      "labeler_id": "EMP_001",
+      "labeler_name": "张三",
+      "label_time": "2026-06-04T10:21:00+08:00"
+    }
+  }'
+```
+
 ## 成功响应
 
 成功时 `process_status` 为 `TD_WRITTEN`，表示 MySQL 和 TDengine 都已写入：
@@ -124,15 +218,17 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   "tdengine_database": "电缆声纹时序库",
   "tdengine_stable": "sensor_waveform_4ch",
   "tdengine_tables": [
-    "vp_sample_001_ch1",
-    "vp_sample_001_ch2",
-    "vp_sample_001_ch3",
-    "vp_sample_001_ch4"
+    "vp_sample_001_a1b2c3d4_ch1",
+    "vp_sample_001_a1b2c3d4_ch2",
+    "vp_sample_001_a1b2c3d4_ch3",
+    "vp_sample_001_a1b2c3d4_ch4"
   ],
   "channel_count": 4,
   "samples_per_channel": 480000
 }
 ```
+
+TDengine 子表名会在 `sample_uid` 的可读前缀后加 8 位短哈希，避免中文或特殊字符样本号被转义后发生重名。
 
 ## 测试脚本
 
@@ -141,6 +237,7 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
 ```bash
 cd /home/hzjq/ml_pipeline
 python3 process/test_cable_voiceprint_protocol.py
+python3 process/test_cable_voiceprint_four_mono_protocol.py
 ```
 
-脚本会生成 1 秒 4 通道 wav，调用接口，验证 MySQL 和 TDengine 写入，然后删除测试样本、TDengine 子表和测试 wav。
+第一个脚本会生成 1 秒单文件 4 通道 wav。第二个脚本会生成 4 个 1 秒单通道 wav。两个脚本都会调用接口，验证 MySQL 和 TDengine 写入，然后删除测试样本、TDengine 子表和测试 wav。
