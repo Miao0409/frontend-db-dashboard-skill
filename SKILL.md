@@ -61,6 +61,12 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py dashboard --top-limit 10 --recent-limit 20
 ```
 
+生成环境声音前端大屏精简 JSON，字段全部为中文：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py environment-dashboard-cn --output /Users/a1111/mysql/环境声音前端展示数据_20260604.json
+```
+
 展示企业实时接入样本列表：
 
 ```bash
@@ -126,15 +132,16 @@ python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.
 ## 工作流
 
 1. 用户要看数据库整体内容时，运行 `database-overview`。
-2. 用户要看历史大屏统计时，运行 `dashboard`。
-3. 用户要看企业接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
-4. 用户给出某个 `sample_uid` 时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
-5. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
-6. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
-7. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
-8. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
-9. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
-10. 用户询问企业如何传 4 通道 wav 文件、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
+2. 用户要看完整历史大屏统计时，运行 `dashboard`。
+3. 用户要给前端一个类似“环境声音数据库”大屏的数据源时，运行 `environment-dashboard-cn`；它只返回中文字段的环境声音数据，包含 `汇总`、`大类别`、`环境声音TOP10`、`小类别数量统计`。
+4. 用户要看企业接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
+5. 用户给出某个 `sample_uid` 时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
+6. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
+7. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
+8. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
+9. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
+10. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
+11. 用户询问企业如何传 4 通道 wav 文件、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
 
 ## 字段口径
 

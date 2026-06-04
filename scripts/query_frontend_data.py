@@ -36,6 +36,81 @@ SERVICE_DISPLAY_NAMES = {
     "unknown": "未分类",
 }
 
+ENVIRONMENT_DASHBOARD_CATEGORIES = {
+    "city_environment": "城市环境声音",
+    "mountain_areas/natural environment": "乡村环境声音",
+    "Industrial_Environment": "工业机械声音",
+    "Grounding_Box_Internal": "智慧耳声纹",
+}
+
+NOISE_SOURCE_DISPLAY_NAMES = {
+    "Alarm_Triggered": "智慧耳告警触发声",
+    "air_conditioner": "空调声",
+    "airplane": "飞机声",
+    "breathing": "呼吸声",
+    "brushing_teeth": "刷牙声",
+    "can_opening": "开罐声",
+    "car_horn": "汽车喇叭声",
+    "cat": "猫叫声",
+    "chainsaw": "电锯声",
+    "children_playing": "儿童玩耍声",
+    "chirping_birds": "鸟鸣声",
+    "church_bells": "教堂钟声",
+    "clapping": "鼓掌声",
+    "clock_alarm": "闹钟声",
+    "clock_tick": "钟表滴答声",
+    "corona": "电晕声",
+    "coughing": "咳嗽声",
+    "cow": "牛叫声",
+    "crackling_fire": "火焰噼啪声",
+    "crickets": "蟋蟀声",
+    "crow": "乌鸦叫声",
+    "crying_baby": "婴儿哭声",
+    "dog": "狗叫声",
+    "dog_bark": "犬吠声",
+    "door_wood_creaks": "木门吱呀声",
+    "door_wood_knock": "木门敲击声",
+    "drilling": "钻孔声",
+    "drinking_sipping": "喝水声",
+    "engine": "发动机声",
+    "engine_idling": "发动机怠速声",
+    "fan": "风扇声",
+    "fireworks": "烟花声",
+    "footsteps": "脚步声",
+    "frog": "青蛙叫声",
+    "glass_breaking": "玻璃破碎声",
+    "gun_shot": "枪声",
+    "hand_saw": "手锯声",
+    "helicopter": "直升机声",
+    "hen": "母鸡叫声",
+    "insects": "昆虫声",
+    "jackhammer": "风镐声",
+    "keyboard_typing": "键盘敲击声",
+    "laughing": "笑声",
+    "mouse_click": "鼠标点击声",
+    "pig": "猪叫声",
+    "pouring_water": "倒水声",
+    "pump": "水泵声",
+    "rain": "雨声",
+    "rooster": "公鸡打鸣声",
+    "sea_waves": "海浪声",
+    "sheep": "羊叫声",
+    "siren": "警笛声",
+    "slider": "滑轨声",
+    "sneezing": "打喷嚏声",
+    "snoring": "打鼾声",
+    "street_music": "街头音乐声",
+    "thunderstorm": "雷雨声",
+    "toilet_flush": "冲水声",
+    "train": "火车声",
+    "transformer": "变压器声",
+    "vacuum_cleaner": "吸尘器声",
+    "valve": "阀门声",
+    "washing_machine": "洗衣机声",
+    "water_drops": "水滴声",
+    "wind": "风声",
+}
+
 GRANULARITY_SQL = {
     "year": "DATE_FORMAT(acquisition_time, '%Y')",
     "month": "DATE_FORMAT(acquisition_time, '%Y-%m')",
@@ -341,6 +416,82 @@ class DbClient:
             "top_categories": top_categories,
             "time_distribution": {"granularity": granularity, "items": time_distribution},
             "recent_samples": recent_samples,
+        }
+
+    def environment_dashboard_cn(self, top_limit: int = 10) -> dict[str, Any]:
+        category_keys = tuple(ENVIRONMENT_DASHBOARD_CATEGORIES)
+        placeholders = ", ".join(["%s"] * len(category_keys))
+        # Duration is corrected with the confirmed data-source rules:
+        # MIMII 10s/sample, TransDKY 3s/sample, UrbanSound8K 525min total,
+        # ESC-50 5s/sample, and SmartEar duration already stored in DB.
+        duration_rules_sec = {
+            "Industrial_Environment": 596286,
+            "city_environment": 38300,
+            "mountain_areas/natural environment": 3200,
+            "Grounding_Box_Internal": 39714,
+        }
+
+        big_rows = self.query(
+            f"""
+            SELECT
+                service_environment AS category_key,
+                COUNT(*) AS record_count,
+                COUNT(DISTINCT noise_source) AS small_category_count
+            FROM noise_classification_db
+            WHERE service_environment IN ({placeholders})
+            GROUP BY service_environment
+            """,
+            category_keys,
+        )
+        big_by_key = {row["category_key"]: row for row in big_rows}
+        big_categories = []
+        for key, name in ENVIRONMENT_DASHBOARD_CATEGORIES.items():
+            row = big_by_key.get(key, {})
+            duration_sec = duration_rules_sec.get(key, 0)
+            big_categories.append(
+                {
+                    "大类别名称": name,
+                    "条数": int(row.get("record_count") or 0),
+                    "小类别数量": int(row.get("small_category_count") or 0),
+                    "总时长秒": duration_sec,
+                    "总时长小时": round(duration_sec / 3600, 3),
+                }
+            )
+
+        small_rows = self.query(
+            f"""
+            SELECT
+                noise_source AS small_category_key,
+                service_environment AS category_key,
+                COUNT(*) AS record_count
+            FROM noise_classification_db
+            WHERE service_environment IN ({placeholders})
+            GROUP BY noise_source, service_environment
+            ORDER BY record_count DESC, small_category_key ASC
+            """,
+            category_keys,
+        )
+        small_categories = [
+            {
+                "大类别名称": ENVIRONMENT_DASHBOARD_CATEGORIES.get(row["category_key"], row["category_key"]),
+                "小类别名称": NOISE_SOURCE_DISPLAY_NAMES.get(row["small_category_key"], row["small_category_key"]),
+                "条数": int(row["record_count"]),
+            }
+            for row in small_rows
+        ]
+
+        total_duration_sec = sum(item["总时长秒"] for item in big_categories)
+        return {
+            "汇总": {
+                "数据总数": sum(item["条数"] for item in big_categories),
+                "总时长秒": total_duration_sec,
+                "总时长小时": round(total_duration_sec / 3600, 3),
+                "大类别总数": len(big_categories),
+                "小类别总数": len({row["small_category_key"] for row in small_rows}),
+            },
+            "大类别": big_categories,
+            "环境声音TOP10": small_categories[: int(top_limit)],
+            "小类别数量统计": small_categories,
         }
 
     def realtime(
@@ -825,6 +976,10 @@ def main() -> None:
     dash.add_argument("--recent-limit", type=int, default=20)
     dash.add_argument("--granularity", choices=sorted(GRANULARITY_SQL), default="year")
 
+    env_dash = sub.add_parser("environment-dashboard-cn", help="返回环境声音前端大屏精简 JSON，字段全部为中文")
+    env_dash.add_argument("--top-limit", type=int, default=10)
+    env_dash.add_argument("--output", help="可选：把结果保存到指定 JSON 文件")
+
     real = sub.add_parser("realtime", help="展示企业实时接入样本列表")
     real.add_argument("--limit", type=int, default=50)
     real.add_argument("--device-id")
@@ -870,6 +1025,11 @@ def main() -> None:
         print_json(client.database_overview(args.recent_limit))
     elif args.command == "dashboard":
         print_json(client.dashboard(args.top_limit, args.recent_limit, args.granularity))
+    elif args.command == "environment-dashboard-cn":
+        payload = client.environment_dashboard_cn(args.top_limit)
+        if args.output:
+            Path(args.output).write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default), encoding="utf-8")
+        print_json(payload)
     elif args.command in {"realtime", "list-samples"}:
         print_json(client.realtime(args.limit, args.device_id, args.site_code, args.status, args.sample_uid))
     elif args.command == "detail":
