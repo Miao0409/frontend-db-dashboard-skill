@@ -20,6 +20,14 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 
 这个 skill 保留历史大屏查询能力，但优先使用新的电缆声纹数据接入和前端展示口径。
 
+企业 4 通道 wav 实时接入使用新接口：
+
+```text
+POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
+```
+
+该接口使用“Linux 上的 wav 文件路径 + JSON 元数据”模式：wav 需要先放到 Linux 服务器，JSON 里用 `file_path` 指向该 wav；接口会写入 MySQL 中文库 `电缆声纹检测库`，并把 4 通道时序数据写入 TDengine 中文库 `电缆声纹时序库`。
+
 ## 快速连接
 
 默认连接：
@@ -107,6 +115,13 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py sample-display SAMPLE_ID
 ```
 
+电缆声纹 4 通道新接口建库和端到端测试：
+
+```bash
+python3 /home/hzjq/ml_pipeline/process/setup_cable_voiceprint_databases.py
+python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_protocol.py
+```
+
 ## 工作流
 
 1. 用户要看数据库整体内容时，运行 `database-overview`。
@@ -118,6 +133,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 7. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
 8. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
 9. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
+10. 用户询问企业如何传 4 通道 wav 文件、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
 
 ## 字段口径
 
@@ -141,4 +157,10 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 
 ```text
 /Users/a1111/.codex/skills/frontend-db-dashboard/references/frontend_db_schema.md
+```
+
+需要 4 通道实时接口的文件传输条件、curl 示例、中文库名和测试脚本时，读取：
+
+```text
+/Users/a1111/.codex/skills/frontend-db-dashboard/references/cable_voiceprint_realtime_api.md
 ```
