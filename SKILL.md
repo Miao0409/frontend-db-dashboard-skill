@@ -46,6 +46,12 @@ POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
 连接数据库并返回连接状态、MySQL 版本、可用数据库和表信息：
 
 ```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/connect_database.py
+```
+
+也可以通过综合工具运行同样的连接检查：
+
+```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py connect-db
 ```
 
