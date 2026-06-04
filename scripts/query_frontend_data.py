@@ -327,6 +327,56 @@ class DbClient:
         rows = self.query("SELECT VERSION() AS version, DATABASE() AS database_name")
         return {"ok": True, "config": {k: v for k, v in self.config.items() if k != "password"}, **rows[0]}
 
+    def connect_db(self) -> dict[str, Any]:
+        health = self.health()
+        database_rows = self.query("SHOW DATABASES")
+        system_databases = {"information_schema", "mysql", "performance_schema", "sys"}
+        database_names = [
+            next(iter(row.values()))
+            for row in database_rows
+            if next(iter(row.values())) not in system_databases
+        ]
+        databases = []
+        for database_name in database_names:
+            table_rows = self.query(
+                """
+                SELECT TABLE_NAME, TABLE_ROWS
+                FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = %s
+                ORDER BY TABLE_NAME
+                """,
+                (database_name,),
+            )
+            databases.append(
+                {
+                    "数据库名称": database_name,
+                    "表数量": len(table_rows),
+                    "主要表": [
+                        {
+                            "表名": row["TABLE_NAME"],
+                            "估算行数": int(row["TABLE_ROWS"] or 0),
+                        }
+                        for row in table_rows[:20]
+                    ],
+                }
+            )
+        return {
+            "连接状态": "成功",
+            "MySQL": {
+                "主机": self.config["host"],
+                "端口": self.config["port"],
+                "用户": self.config["user"],
+                "当前数据库": health["database_name"],
+                "版本": health["version"],
+            },
+            "可用数据库": databases,
+            "常用命令": {
+                "环境声音前端展示": "environment-dashboard-cn",
+                "数据库整体概览": "database-overview",
+                "连接检查": "connect-db",
+            },
+        }
+
     def dashboard(self, top_limit: int, recent_limit: int, granularity: str) -> dict[str, Any]:
         granularity = granularity if granularity in GRANULARITY_SQL else "year"
         time_expr = GRANULARITY_SQL[granularity]
@@ -971,6 +1021,8 @@ def main() -> None:
     overview = sub.add_parser("database-overview", help="展示数据库整体内容概览、表数量和最新样本")
     overview.add_argument("--recent-limit", type=int, default=10)
 
+    sub.add_parser("connect-db", help="连接 MySQL 数据库，并返回连接状态、版本、可用数据库和表信息")
+
     dash = sub.add_parser("dashboard", help="展示历史环境声纹大屏统计")
     dash.add_argument("--top-limit", type=int, default=10)
     dash.add_argument("--recent-limit", type=int, default=20)
@@ -1021,6 +1073,8 @@ def main() -> None:
     client = DbClient()
     if args.command == "health":
         print_json(client.health())
+    elif args.command == "connect-db":
+        print_json(client.connect_db())
     elif args.command == "database-overview":
         print_json(client.database_overview(args.recent_limit))
     elif args.command == "dashboard":
