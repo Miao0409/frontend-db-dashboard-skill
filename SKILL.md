@@ -1,6 +1,6 @@
 ---
 name: frontend-db-dashboard
-description: Work with the cable voiceprint data pipeline and MySQL database. Use when Codex needs to validate data-center JSON manifests, ingest audio index metadata, query pending samples for inference, submit algorithm results, return frontend sample display data including audio and spectrum resources, query dashboard statistics, or explain the cable voiceprint database/API field design.
+description: Work with the cable voiceprint data pipeline and MySQL database. Use when Codex needs to validate data-provider JSON manifests, ingest audio index metadata, query pending samples for inference, submit algorithm results, return frontend sample display data including audio and spectrum resources, query dashboard statistics, or explain the cable voiceprint database/API field design.
 ---
 
 # 电缆声纹数据链路
@@ -10,7 +10,7 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 使用这个 skill 时，围绕这条链路工作：
 
 ```text
-数据中心 JSON 配置文件
+数据方 JSON 配置文件
 -> 接口服务接收和校验
 -> 数据库保存样本、音频索引、4 通道信息
 -> 算法获取待推理样本
@@ -20,13 +20,13 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 
 这个 skill 保留历史大屏查询能力，但优先使用新的电缆声纹数据接入和前端展示口径。
 
-企业 4 通道 wav 实时接入使用新接口：
+数据方 4 通道 wav 实时接入使用新接口：
 
 ```text
 POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
 ```
 
-该接口优先支持“甲方 wav 地址 + Linux 保存地址 + JSON 元数据”模式：JSON 里用 `enterprise_audio_url` 提供甲方文件服务器上的 wav 地址，用 `linux_save_path` 指定下载到我方 Linux 的保存路径。接口会自动下载 wav、读取采样参数、计算 `file_sha256`，再写入 MySQL 中文库 `电缆声纹检测库`，并把波形时序数据写入 TDengine 中文库 `电缆声纹时序库`。接口也兼容旧模式：1 个 Linux 本地四通道 wav，或 4 个 Linux 本地单通道 wav。
+该接口优先支持“数据方 wav 地址 + Linux 保存地址 + JSON 元数据”模式：JSON 里用 `source_audio_url` 提供数据方文件服务器上的 wav 地址，用 `linux_save_path` 指定下载到我方 Linux 的保存路径。接口会自动下载 wav、读取采样参数、计算 `file_sha256`，再写入 MySQL 中文库 `电缆声纹检测库`，并把波形时序数据写入 TDengine 中文库 `电缆声纹时序库`。接口也兼容旧模式：1 个 Linux 本地四通道 wav，或 4 个 Linux 本地单通道 wav。
 
 ## 快速连接
 
@@ -79,7 +79,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py environment-dashboard-cn --output /Users/a1111/mysql/环境声音前端展示数据_20260604.json
 ```
 
-展示企业实时接入样本列表：
+展示数据方实时接入样本列表：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --limit 50
@@ -91,7 +91,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --device-id 设备编号 --site-code 站点编号 --status 待处理
 ```
 
-校验数据中心 JSON 配置文件：
+校验数据方 JSON 配置文件：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py validate-manifest /path/to/manifest.json
@@ -127,13 +127,13 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-result /path/to/result.json --commit
 ```
 
-查询甲方前端单条样本展示数据：
+查询数据方前端单条样本展示数据：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py sample-display SAMPLE_ID
 ```
 
-甲方使用 Python `requests` 提交 JSON 文件：
+数据方使用 Python `requests` 提交 JSON 文件：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/cable_voiceprint_request_demo.py --write-example sample.json
@@ -155,30 +155,30 @@ python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.
 2. 用户要看数据库整体内容时，运行 `database-overview`。
 3. 用户要看完整历史大屏统计时，运行 `dashboard`。
 4. 用户要给前端一个类似“环境声音数据库”大屏的数据源时，运行 `environment-dashboard-cn`；它只返回中文字段的环境声音数据，包含 `汇总`、`大类别`、`环境声音TOP10`、`小类别数量统计`。
-5. 用户要看企业接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
+5. 用户要看数据方接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
 6. 用户给出某个 `sample_uid` 时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
-7. 接到数据中心字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
-8. 数据中心给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
+7. 接到数据方字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
+8. 数据方给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
 9. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
 10. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
 11. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
-12. 用户询问企业如何传 wav 文件、如何从甲方文件服务器下载 wav、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
+12. 用户询问数据方如何传 wav 文件、如何从数据方文件服务器下载 wav、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
 
 ## 字段口径
 
-数据中心主要提供：
+数据方主要提供：
 
 ```text
-采集基础信息、设备与通道信息、采样参数、音频文件索引、现场环境
+样本标识、采集时间、设备信息、数据方 wav 地址、Linux 保存路径、现场信息、人工故障打标
 ```
 
 我方系统生成或回填：
 
 ```text
-处理状态、算法结果、故障标签、人工确认结果、频谱图/波形图/特征资源地址
+采样参数、文件校验值、Linux 实际文件路径、处理状态、算法结果、频谱图/波形图/特征资源地址
 ```
 
-前端播放音频需要 `audio_uri`。数据库内部的 `created_at`、`updated_at` 可以保留，但不要作为给甲方解释的展示字段。
+前端播放音频需要 `audio_uri`。数据库内部的 `created_at`、`updated_at` 可以保留，但不要作为给数据方解释的展示字段。
 
 ## 参考资料
 

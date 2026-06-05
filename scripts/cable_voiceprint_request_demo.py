@@ -19,7 +19,7 @@ EXAMPLE_PAYLOAD: dict[str, Any] = {
     "sample_uid": "SAMPLE_001",
     "collect_time": "2026-06-05T10:30:00+08:00",
     "device_id": "DEVICE_001",
-    "enterprise_audio_url": "http://甲方服务器IP:端口/audio/SAMPLE_001.wav",
+    "source_audio_url": "http://数据方服务器IP:端口/audio/SAMPLE_001.wav",
     "linux_save_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_001/SAMPLE_001.wav",
     "manual_annotation": {
         "is_labeled": True,
@@ -30,12 +30,12 @@ EXAMPLE_PAYLOAD: dict[str, Any] = {
         "labeler_id": "EMP_001",
         "labeler_name": "张三",
         "label_time": "2026-06-05T10:31:00+08:00",
-        "annotation_remark": "企业人工确认该样本存在局部放电特征",
+        "annotation_remark": "数据方人工确认该样本存在局部放电特征",
     },
 }
 
 
-PLACEHOLDER_TEXT = ("甲方服务器IP", "端口")
+PLACEHOLDER_TEXT = ("数据方服务器IP", "端口")
 
 
 def json_text(value: Any) -> str:
@@ -86,7 +86,7 @@ def submit_payload(api_url: str, payload: dict[str, Any], timeout: int, token: s
 def main() -> int:
     parser = argparse.ArgumentParser(description="Submit cable voiceprint sample JSON with requests.")
     parser.add_argument("--url", default=os.getenv("CABLE_VOICEPRINT_API_URL", DEFAULT_API_URL), help="接口地址")
-    parser.add_argument("--json-file", type=Path, help="甲方已经写好的 JSON 文件")
+    parser.add_argument("--json-file", type=Path, help="数据方已经写好的 JSON 文件")
     parser.add_argument("--submit-example", action="store_true", help="提交脚本内置 JSON 案例")
     parser.add_argument("--print-example", action="store_true", help="打印脚本内置 JSON 案例")
     parser.add_argument("--write-example", type=Path, help="把脚本内置 JSON 案例写到指定文件")
@@ -108,7 +108,7 @@ def main() -> int:
 
     payload = load_payload(args.json_file, args.submit_example)
     if contains_placeholder(payload):
-        print("JSON 中还有占位内容，请先替换为甲方真实服务器地址和端口。", file=sys.stderr)
+        print("JSON 中还有占位内容，请先替换为数据方真实服务器地址和端口。", file=sys.stderr)
         return 2
 
     submit_payload(args.url, payload, args.timeout, args.token)

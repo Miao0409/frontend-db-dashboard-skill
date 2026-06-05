@@ -11,12 +11,12 @@ Content-Type: application/json
 
 ## 当前支持的传输模式
 
-优先推荐甲方使用“甲方 wav 地址 + 我方 Linux 保存地址”：
+优先推荐数据方使用“数据方 wav 地址 + 我方 Linux 保存地址”：
 
 ```text
-甲方文件服务器保存 wav
--> 甲方 POST JSON，提供 enterprise_audio_url 和 linux_save_path
--> 接口从甲方地址下载 wav 到 Linux
+数据方文件服务器保存 wav
+-> 数据方 POST JSON，提供 source_audio_url 和 linux_save_path
+-> 接口从数据方地址下载 wav 到 Linux
 -> 接口读取 wav 头，自动补 channel_count、sample_rate、bit_depth、duration_sec
 -> 接口自动计算 file_sha256
 -> 写 MySQL 中文库：电缆声纹检测库
@@ -30,18 +30,18 @@ Content-Type: application/json
 4 个 Linux 本地单通道 wav + JSON
 ```
 
-## 甲方需要提供什么
+## 数据方需要提供什么
 
-甲方单通道 demo 最少需要提供：
+数据方单通道 demo 最少需要提供：
 
 ```text
 sample_uid               样本唯一编号
 request_id               本次请求编号
 collect_time             采集时间，ISO8601
 device_id                采集设备编号
-enterprise_audio_url     甲方服务器上的 wav 下载地址，http/https
+source_audio_url     数据方服务器上的 wav 下载地址，http/https
 linux_save_path          wav 下载到我方 Linux 后的保存路径
-manual_annotation        企业人工故障打标，建议提供
+manual_annotation        数据方人工故障打标，建议提供
 ```
 
 `linux_save_path` 必须位于：
@@ -50,9 +50,9 @@ manual_annotation        企业人工故障打标，建议提供
 /home/hzjq/ml_pipeline/data/cable_voiceprint/
 ```
 
-甲方可以不提供 `file_sha256`、`sample_rate`、`bit_depth`、`duration_sec`、`channel_count`。接口会下载 wav 后自动读取和计算。如果甲方提供这些字段，接口会和 wav 真实参数校验，不一致会拒绝入库。
+数据方可以不提供 `file_sha256`、`sample_rate`、`bit_depth`、`duration_sec`、`channel_count`。接口会下载 wav 后自动读取和计算。如果数据方提供这些字段，接口会和 wav 真实参数校验，不一致会拒绝入库。
 
-## 甲方单通道 demo 请求示例
+## 数据方单通道 demo 请求示例
 
 Python `requests` 脚本：
 
@@ -61,7 +61,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/cable_voiceprin
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/cable_voiceprint_request_demo.py --json-file sample.json
 ```
 
-`sample.json` 内容可使用下面的 JSON 案例。甲方需要把 `enterprise_audio_url` 替换成真实 wav 下载地址。
+`sample.json` 内容可使用下面的 JSON 案例。数据方需要把 `source_audio_url` 替换成真实 wav 下载地址。
 
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
@@ -73,12 +73,12 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
     "collect_time": "2026-06-05T10:30:00+08:00",
     "device_id": "DEVICE_001",
     "device_name": "电缆声纹采集设备001",
-    "device_location": "甲方测试现场",
+    "device_location": "数据方测试现场",
     "site_code": "SITE_001",
     "site_name": "某变电站",
     "site_environment": "电缆沟",
     "audio_format": "wav",
-    "enterprise_audio_url": "http://甲方服务器/audio/SAMPLE_001.wav",
+    "source_audio_url": "http://数据方服务器/audio/SAMPLE_001.wav",
     "linux_save_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_001/SAMPLE_001.wav",
     "manual_annotation": {
       "is_labeled": true,
@@ -89,7 +89,7 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
       "labeler_id": "EMP_001",
       "labeler_name": "张三",
       "label_time": "2026-06-05T10:31:00+08:00",
-      "annotation_remark": "企业人工确认该样本存在局部放电特征"
+      "annotation_remark": "数据方人工确认该样本存在局部放电特征"
     }
   }'
 ```
@@ -167,7 +167,7 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
 
 ## file_sha256
 
-甲方 URL 模式下可以不传 `file_sha256`，接口下载 wav 后自动计算。
+数据方 URL 模式下可以不传 `file_sha256`，接口下载 wav 后自动计算。
 
 本地文件模式下建议传 `file_sha256`。单文件模式直接计算 wav 文件 SHA256。四个单通道模式先分别计算 4 个通道文件 SHA256，再按通道顺序合并：
 
@@ -177,8 +177,8 @@ file_sha256 = sha256(ch1_sha256 + "\n" + ch2_sha256 + "\n" + ch3_sha256 + "\n" +
 
 ## 注意事项
 
-- `enterprise_audio_url` 需要是接口服务能访问到的 `http` 或 `https` 地址。
-- 文件名含中文时，建议甲方使用 URL 编码；接口也会自动处理 URL 路径中的中文。
+- `source_audio_url` 需要是接口服务能访问到的 `http` 或 `https` 地址。
+- 文件名含中文时，建议数据方使用 URL 编码；接口也会自动处理 URL 路径中的中文。
 - `sample_uid` 不能重复；重复样本必须保持同一个 wav 内容。
 - `linux_save_path` 只能写入允许目录，防止接口被用来覆盖服务器任意文件。
 - TDengine 适合存波形和频谱数值，不建议存 PNG/JPG 频谱图文件；频谱图文件应保存在 Linux 或对象存储，MySQL 保存访问地址。
@@ -194,4 +194,4 @@ python3 process/test_cable_voiceprint_protocol.py
 python3 process/test_cable_voiceprint_four_mono_protocol.py
 ```
 
-第一条测试会模拟甲方文件服务器提供单通道 wav 地址，接口下载到 Linux 后写入 MySQL 和 TDengine，并在测试结束后删除测试样本、TDengine 子表和测试 wav。
+第一条测试会模拟数据方文件服务器提供单通道 wav 地址，接口下载到 Linux 后写入 MySQL 和 TDengine，并在测试结束后删除测试样本、TDengine 子表和测试 wav。
