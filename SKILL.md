@@ -26,7 +26,7 @@ description: Work with the cable voiceprint data pipeline and MySQL database. Us
 POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
 ```
 
-该接口使用“Linux 上的 wav 文件路径 + JSON 元数据”模式：wav 需要先放到 Linux 服务器；可以是 1 个四通道 wav，也可以是 4 个单通道 wav。JSON 里用 `file_path` 指向单文件 wav 或样本文件夹；四单通道模式再用 `channels[].channel_file_path` 指向每个通道文件。接口会写入 MySQL 中文库 `电缆声纹检测库`，并把 4 通道时序数据写入 TDengine 中文库 `电缆声纹时序库`。
+该接口优先支持“甲方 wav 地址 + Linux 保存地址 + JSON 元数据”模式：JSON 里用 `enterprise_audio_url` 提供甲方文件服务器上的 wav 地址，用 `linux_save_path` 指定下载到我方 Linux 的保存路径。接口会自动下载 wav、读取采样参数、计算 `file_sha256`，再写入 MySQL 中文库 `电缆声纹检测库`，并把波形时序数据写入 TDengine 中文库 `电缆声纹时序库`。接口也兼容旧模式：1 个 Linux 本地四通道 wav，或 4 个 Linux 本地单通道 wav。
 
 ## 快速连接
 
@@ -137,6 +137,7 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 
 ```bash
 python3 /home/hzjq/ml_pipeline/process/setup_cable_voiceprint_databases.py
+python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_remote_audio_url_protocol.py
 python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_protocol.py
 python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.py
 ```
@@ -154,7 +155,7 @@ python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.
 9. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
 10. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
 11. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
-12. 用户询问企业如何传 4 通道 wav 文件、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
+12. 用户询问企业如何传 wav 文件、如何从甲方文件服务器下载 wav、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
 
 ## 字段口径
 

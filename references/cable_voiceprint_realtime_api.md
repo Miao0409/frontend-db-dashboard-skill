@@ -1,4 +1,4 @@
-# 电缆声纹 4 通道实时接口
+# 电缆声纹实时接口
 
 ## 接口
 
@@ -9,198 +9,131 @@ Content-Type: application/json
 
 这个接口不是网页。GET 打开会返回 `405`，调用方必须 POST JSON。
 
-## 传输模式
+## 当前支持的传输模式
 
-第一版采用“Linux 文件路径 + JSON 元数据”，支持两种 wav 形态：
-
-```text
-方式一：1 个 wav 文件内部就是 4 通道
-方式二：4 个单通道 wav 文件合在一起表示 1 条 4 通道样本
-```
-
-基本链路：
+优先推荐甲方使用“甲方 wav 地址 + 我方 Linux 保存地址”：
 
 ```text
-调用方先把 wav 放到 Linux 服务器
--> JSON 里 file_path 填 Linux 上的真实路径
--> 接口读取 wav，校验通道数、采样率、位深和 file_sha256
+甲方文件服务器保存 wav
+-> 甲方 POST JSON，提供 enterprise_audio_url 和 linux_save_path
+-> 接口从甲方地址下载 wav 到 Linux
+-> 接口读取 wav 头，自动补 channel_count、sample_rate、bit_depth、duration_sec
+-> 接口自动计算 file_sha256
 -> 写 MySQL 中文库：电缆声纹检测库
--> 解析 4 通道波形写 TDengine 中文库：电缆声纹时序库
+-> 写 TDengine 中文库：电缆声纹时序库
 ```
 
-当前不直接上传 wav 二进制。如果调用方只有企业文件服务器地址，需要先同步到 Linux，或后续扩展由接口根据 `audio_uri` 自动下载。
-
-## 使用条件
-
-调用方需要：
-
-- 能访问 `http://192.168.10.116:8000`。
-- wav 文件已经在 Linux 服务器上，接口服务能读取。
-- 单文件模式：wav 必须真实包含 4 个通道。
-- 四单通道模式：每个 wav 必须是单通道，并且 4 个文件采样率、位深、采样点数量一致。
-- JSON 中 `sample_rate`、`bit_depth`、`channel_count` 和 wav 真实参数一致。
-- `sample_uid` 唯一；重复样本必须保持 `file_sha256` 一致。
-
-## 必填字段
+接口同时兼容旧模式：
 
 ```text
-protocol_version
-request_id
-sample_uid
-collect_time
-device_id
-channel_count
-sample_rate
-bit_depth
-duration_sec
-file_name
-file_path
-file_sha256
+1 个 Linux 本地四通道 wav + JSON
+4 个 Linux 本地单通道 wav + JSON
 ```
 
-建议字段：
+## 甲方需要提供什么
+
+甲方单通道 demo 最少需要提供：
 
 ```text
-batch_id
-collect_task_id
-device_name
-device_location
-site_code
-site_name
-site_environment
-audio_uri
-file_size_bytes
-channel_map
-channels
-manual_annotation
+sample_uid               样本唯一编号
+request_id               本次请求编号
+collect_time             采集时间，ISO8601
+device_id                采集设备编号
+enterprise_audio_url     甲方服务器上的 wav 下载地址，http/https
+linux_save_path          wav 下载到我方 Linux 后的保存路径
+manual_annotation        企业人工故障打标，建议提供
 ```
 
-## file_sha256 计算
-
-单文件模式直接计算该 wav 文件的 SHA256：
+`linux_save_path` 必须位于：
 
 ```text
-file_sha256 = sha256(SAMPLE_001.wav)
+/home/hzjq/ml_pipeline/data/cable_voiceprint/
 ```
 
-四单通道模式先分别计算 4 个通道文件的 SHA256，再按通道顺序合并：
+甲方可以不提供 `file_sha256`、`sample_rate`、`bit_depth`、`duration_sec`、`channel_count`。接口会下载 wav 后自动读取和计算。如果甲方提供这些字段，接口会和 wav 真实参数校验，不一致会拒绝入库。
 
-```text
-ch1_sha256 = sha256(ch1.wav)
-ch2_sha256 = sha256(ch2.wav)
-ch3_sha256 = sha256(ch3.wav)
-ch4_sha256 = sha256(ch4.wav)
-file_sha256 = sha256(ch1_sha256 + "\n" + ch2_sha256 + "\n" + ch3_sha256 + "\n" + ch4_sha256)
+## 甲方单通道 demo 请求示例
+
+```bash
+curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "protocol_version": "1.1",
+    "request_id": "REQ_SAMPLE_001",
+    "sample_uid": "SAMPLE_001",
+    "collect_time": "2026-06-05T10:30:00+08:00",
+    "device_id": "DEVICE_001",
+    "device_name": "电缆声纹采集设备001",
+    "device_location": "甲方测试现场",
+    "site_code": "SITE_001",
+    "site_name": "某变电站",
+    "site_environment": "电缆沟",
+    "audio_format": "wav",
+    "enterprise_audio_url": "http://甲方服务器/audio/SAMPLE_001.wav",
+    "linux_save_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_001/SAMPLE_001.wav",
+    "manual_annotation": {
+      "is_labeled": true,
+      "is_fault": true,
+      "fault_type": "内源故障",
+      "fault_label": "局部放电",
+      "fault_severity": "中等",
+      "labeler_id": "EMP_001",
+      "labeler_name": "张三",
+      "label_time": "2026-06-05T10:31:00+08:00",
+      "annotation_remark": "企业人工确认该样本存在局部放电特征"
+    }
+  }'
 ```
 
-## 单文件四通道 curl 示例
+## 本地四通道 wav 示例
 
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   -H "Content-Type: application/json" \
   -d '{
     "protocol_version": "1.0",
-    "request_id": "REQ_SAMPLE_001",
-    "sample_uid": "SAMPLE_001",
-    "collect_time": "2026-06-04T10:15:30+08:00",
+    "request_id": "REQ_SAMPLE_4CH_001",
+    "sample_uid": "SAMPLE_4CH_001",
+    "collect_time": "2026-06-05T10:40:00+08:00",
     "device_id": "DEVICE_001",
-    "site_code": "SITE_001",
-    "site_name": "某变电站",
-    "site_environment": "电缆沟",
     "channel_count": 4,
     "sample_rate": 48000,
     "bit_depth": 16,
     "duration_sec": 10,
     "audio_format": "wav",
     "channel_storage_mode": "单文件四通道",
-    "file_name": "SAMPLE_001.wav",
-    "file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_001.wav",
-    "audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_001.wav",
-    "file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "channel_map": [
-      {"channel_index": 1, "mic_id": "MIC-01", "position_label": "通道1"},
-      {"channel_index": 2, "mic_id": "MIC-02", "position_label": "通道2"},
-      {"channel_index": 3, "mic_id": "MIC-03", "position_label": "通道3"},
-      {"channel_index": 4, "mic_id": "MIC-04", "position_label": "通道4"}
-    ],
-    "manual_annotation": {
-      "is_labeled": true,
-      "is_fault": true,
-      "fault_type": "内源故障",
-      "fault_label": "局部放电",
-      "fault_severity": "中等",
-      "labeler_id": "EMP_001",
-      "labeler_name": "张三",
-      "label_time": "2026-06-04T10:16:00+08:00",
-      "annotation_remark": "企业人工确认该样本存在局部放电特征"
-    }
+    "file_name": "SAMPLE_4CH_001.wav",
+    "file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_4CH_001.wav",
+    "file_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }'
 ```
 
-## 四个单通道 wav curl 示例
+## 四个单通道 wav 示例
 
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   -H "Content-Type: application/json" \
   -d '{
     "protocol_version": "1.0",
-    "request_id": "REQ_SAMPLE_002",
-    "sample_uid": "SAMPLE_002",
-    "collect_time": "2026-06-04T10:20:30+08:00",
+    "request_id": "REQ_SAMPLE_MONO_001",
+    "sample_uid": "SAMPLE_MONO_001",
+    "collect_time": "2026-06-05T10:50:00+08:00",
     "device_id": "DEVICE_001",
-    "site_code": "SITE_001",
-    "site_name": "某变电站",
-    "site_environment": "电缆沟",
     "channel_count": 4,
     "sample_rate": 48000,
     "bit_depth": 16,
     "duration_sec": 10,
     "audio_format": "wav",
     "channel_storage_mode": "四个单通道文件",
-    "file_name": "SAMPLE_002",
-    "file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/",
-    "audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/",
+    "file_name": "SAMPLE_MONO_001",
+    "file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_MONO_001/",
     "file_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "channels": [
-      {
-        "channel_index": 1,
-        "mic_id": "MIC-01",
-        "position_label": "通道1",
-        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch1.wav",
-        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch1.wav"
-      },
-      {
-        "channel_index": 2,
-        "mic_id": "MIC-02",
-        "position_label": "通道2",
-        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch2.wav",
-        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch2.wav"
-      },
-      {
-        "channel_index": 3,
-        "mic_id": "MIC-03",
-        "position_label": "通道3",
-        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch3.wav",
-        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch3.wav"
-      },
-      {
-        "channel_index": 4,
-        "mic_id": "MIC-04",
-        "position_label": "通道4",
-        "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_002/ch4.wav",
-        "channel_audio_uri": "http://192.168.10.116:8000/audio/SAMPLE_002/ch4.wav"
-      }
-    ],
-    "manual_annotation": {
-      "is_labeled": true,
-      "is_fault": true,
-      "fault_type": "内源故障",
-      "fault_label": "局部放电",
-      "fault_severity": "中等",
-      "labeler_id": "EMP_001",
-      "labeler_name": "张三",
-      "label_time": "2026-06-04T10:21:00+08:00"
-    }
+      {"channel_index": 1, "mic_id": "MIC-01", "position_label": "通道1", "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_MONO_001/ch1.wav"},
+      {"channel_index": 2, "mic_id": "MIC-02", "position_label": "通道2", "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_MONO_001/ch2.wav"},
+      {"channel_index": 3, "mic_id": "MIC-03", "position_label": "通道3", "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_MONO_001/ch3.wav"},
+      {"channel_index": 4, "mic_id": "MIC-04", "position_label": "通道4", "channel_file_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_MONO_001/ch4.wav"}
+    ]
   }'
 ```
 
@@ -217,18 +150,29 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   "mysql_database": "电缆声纹检测库",
   "tdengine_database": "电缆声纹时序库",
   "tdengine_stable": "sensor_waveform_4ch",
-  "tdengine_tables": [
-    "vp_sample_001_a1b2c3d4_ch1",
-    "vp_sample_001_a1b2c3d4_ch2",
-    "vp_sample_001_a1b2c3d4_ch3",
-    "vp_sample_001_a1b2c3d4_ch4"
-  ],
-  "channel_count": 4,
-  "samples_per_channel": 480000
+  "tdengine_tables": ["vp_sample_001_a1b2c3d4_ch1"],
+  "channel_count": 1,
+  "samples_per_channel": 8000
 }
 ```
 
-TDengine 子表名会在 `sample_uid` 的可读前缀后加 8 位短哈希，避免中文或特殊字符样本号被转义后发生重名。
+## file_sha256
+
+甲方 URL 模式下可以不传 `file_sha256`，接口下载 wav 后自动计算。
+
+本地文件模式下建议传 `file_sha256`。单文件模式直接计算 wav 文件 SHA256。四个单通道模式先分别计算 4 个通道文件 SHA256，再按通道顺序合并：
+
+```text
+file_sha256 = sha256(ch1_sha256 + "\n" + ch2_sha256 + "\n" + ch3_sha256 + "\n" + ch4_sha256)
+```
+
+## 注意事项
+
+- `enterprise_audio_url` 需要是接口服务能访问到的 `http` 或 `https` 地址。
+- 文件名含中文时，建议甲方使用 URL 编码；接口也会自动处理 URL 路径中的中文。
+- `sample_uid` 不能重复；重复样本必须保持同一个 wav 内容。
+- `linux_save_path` 只能写入允许目录，防止接口被用来覆盖服务器任意文件。
+- TDengine 适合存波形和频谱数值，不建议存 PNG/JPG 频谱图文件；频谱图文件应保存在 Linux 或对象存储，MySQL 保存访问地址。
 
 ## 测试脚本
 
@@ -236,8 +180,9 @@ TDengine 子表名会在 `sample_uid` 的可读前缀后加 8 位短哈希，避
 
 ```bash
 cd /home/hzjq/ml_pipeline
+python3 process/test_cable_voiceprint_remote_audio_url_protocol.py
 python3 process/test_cable_voiceprint_protocol.py
 python3 process/test_cable_voiceprint_four_mono_protocol.py
 ```
 
-第一个脚本会生成 1 秒单文件 4 通道 wav。第二个脚本会生成 4 个 1 秒单通道 wav。两个脚本都会调用接口，验证 MySQL 和 TDengine 写入，然后删除测试样本、TDengine 子表和测试 wav。
+第一条测试会模拟甲方文件服务器提供单通道 wav 地址，接口下载到 Linux 后写入 MySQL 和 TDengine，并在测试结束后删除测试样本、TDengine 子表和测试 wav。
