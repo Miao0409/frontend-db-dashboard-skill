@@ -54,6 +54,15 @@ manual_annotation        企业人工故障打标，建议提供
 
 ## 甲方单通道 demo 请求示例
 
+Python `requests` 脚本：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/cable_voiceprint_request_demo.py --write-example sample.json
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/cable_voiceprint_request_demo.py --json-file sample.json
+```
+
+`sample.json` 内容可使用下面的 JSON 案例。甲方需要把 `enterprise_audio_url` 替换成真实 wav 下载地址。
+
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
   -H "Content-Type: application/json" \
