@@ -241,6 +241,8 @@ python3 scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json
 python3 scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json --commit
 ```
 
+The bundled algorithm now submits to the new Chinese cable voiceprint database by default, through `query_frontend_data.py submit-cable-result`. Use `--target-db legacy` only when explicitly working with old `noise_classification.realtime_*` tables.
+
 Only add `--commit` when the user explicitly asks to write to MySQL. For full algorithm inputs, outputs, labels, and result JSON fields, read:
 
 ```text

@@ -17,10 +17,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from voiceprint_algorithm.infer import infer_one, infer_pending_records
-from voiceprint_algorithm.model import discover_dataset, save_model, train_model
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cable voiceprint demo algorithm tools.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -56,6 +52,12 @@ def main() -> None:
     submit_parser = sub.add_parser("submit-result", help="Validate or commit algorithm results to the database.")
     submit_parser.add_argument("json_path")
     submit_parser.add_argument("--commit", action="store_true")
+    submit_parser.add_argument(
+        "--target-db",
+        choices=["cable", "legacy"],
+        default="cable",
+        help="cable 写入新中文库 voiceprint_model_result；legacy 写入旧库 realtime_model_result。",
+    )
 
     run_parser = sub.add_parser("run-pending", help="Fetch pending samples, infer them, and optionally submit results.")
     run_parser.add_argument("--limit", type=int, default=20)
@@ -65,18 +67,30 @@ def main() -> None:
     run_parser.add_argument("--result-json", required=True)
     run_parser.add_argument("--submit", action="store_true")
     run_parser.add_argument("--commit", action="store_true")
+    run_parser.add_argument(
+        "--target-db",
+        choices=["cable", "legacy"],
+        default="cable",
+        help="提交结果时的目标数据库，默认新中文库。",
+    )
 
     args = parser.parse_args()
     if args.command == "train":
+        from voiceprint_algorithm.model import discover_dataset, save_model, train_model
+
         records = discover_dataset(args.data_dir, max_per_class=args.max_per_class)
         model, metrics = train_model(records, test_size=args.test_size, random_state=args.random_state)
         save_model(model, args.model_dir, metrics)
         print(json.dumps({"model_dir": args.model_dir, **metrics}, ensure_ascii=False, indent=2))
     elif args.command == "infer-one":
+        from voiceprint_algorithm.infer import infer_one
+
         payload = infer_one(args.audio, args.sample_uid, args.model_dir, args.output_dir, args.topk, args.review_threshold)
         _write_json(args.result_json, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     elif args.command == "infer-pending":
+        from voiceprint_algorithm.infer import infer_pending_records
+
         payload = infer_pending_records(args.pending_json, args.model_dir, args.output_dir, args.topk, args.review_threshold)
         _write_json(args.result_json, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -85,11 +99,13 @@ def main() -> None:
         _write_text(args.output, payload)
         print(payload)
     elif args.command == "submit-result":
-        command = ["submit-result", args.json_path]
+        command = ["submit-cable-result" if args.target_db == "cable" else "submit-result", args.json_path]
         if args.commit:
             command.append("--commit")
         print(_query_frontend_data(command))
     elif args.command == "run-pending":
+        from voiceprint_algorithm.infer import infer_pending_records
+
         pending_path = Path(args.pending_json or Path(args.output_dir) / "pending_samples.json")
         pending_text = _query_frontend_data(["pending-for-inference", "--limit", str(args.limit)])
         _write_text(pending_path, pending_text)
@@ -97,7 +113,7 @@ def main() -> None:
         _write_json(args.result_json, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         if args.submit:
-            command = ["submit-result", args.result_json]
+            command = ["submit-cable-result" if args.target_db == "cable" else "submit-result", args.result_json]
             if args.commit:
                 command.append("--commit")
             print(_query_frontend_data(command))

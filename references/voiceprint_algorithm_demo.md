@@ -67,10 +67,16 @@ Validate algorithm results without writing:
 python scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json
 ```
 
-Commit algorithm results to MySQL:
+Commit algorithm results to MySQL. By default this writes to the new Chinese cable voiceprint database through `submit-cable-result`:
 
 ```bash
 python scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json --commit
+```
+
+Only when working with old `noise_classification.realtime_*` tables, add:
+
+```bash
+python scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json --target-db legacy --commit
 ```
 
 Run the full pending-sample algorithm loop, with optional submit:
