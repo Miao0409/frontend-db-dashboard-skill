@@ -9,6 +9,16 @@ Content-Type: application/json
 
 这个接口不是网页。GET 打开会返回 `405`，调用方必须 POST JSON。
 
+现在推荐的数据方 4 通道 demo 是“4 个单通道 wav 分 4 次上传”。对应接口是：
+
+```text
+GET  http://192.168.10.116:8000/api/v1/cable-voiceprint/samples/{sample_uid}/channels
+POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples/{sample_uid}/channels/{channel_no}
+Content-Type: application/json
+```
+
+`GET` 用于查询 4 个通道哪些已经上传，`POST` 用于上传某一个通道。第 4 个通道上传完成后，服务端会自动合并样本元数据、写 MySQL 中文库 `电缆声纹检测库`，并把 4 通道波形写入 TDengine 中文库 `电缆声纹时序库`。
+
 ## 当前支持的传输模式
 
 优先推荐数据方使用“数据方 wav 地址 + 我方 Linux 保存地址”：
@@ -28,6 +38,38 @@ Content-Type: application/json
 ```text
 1 个 Linux 本地四通道 wav + JSON
 4 个 Linux 本地单通道 wav + JSON
+```
+
+## skill 新上传命令
+
+查询通道状态：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py cable-channel-status SAMPLE_ID
+```
+
+上传某个通道。命令会先查询状态，如果通道已存在就跳过，避免重复上传：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py upload-channel SAMPLE_ID 1 /path/to/channel_1.json
+```
+
+一次性提交样本 JSON：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py upload-sample /path/to/sample.json
+```
+
+查询新中文库里的样本状态、通道、人工标注、算法结果和前端资源：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py cable-sample-status SAMPLE_ID
+```
+
+算法结果写回新中文库：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-cable-result /path/to/result.json --commit
 ```
 
 ## 数据方需要提供什么
@@ -118,6 +160,36 @@ curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \
 ```
 
 ## 四个单通道 wav 示例
+
+如果数据方现在只有 4 个单通道 wav，优先使用分通道接口；每个通道 wav 必须是 1 通道。每个通道的 JSON 至少包含 `sample_uid`、`request_id`、`collect_time`、`device_id`、`source_audio_url`、`linux_save_path`、通道名或麦克风编号，以及人工标注信息。服务端会在 4 个通道都收到后完成最终入库。
+
+第 1 通道请求示例：
+
+```bash
+curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples/SAMPLE_001/channels/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "protocol_version": "1.1",
+    "request_id": "REQ_SAMPLE_001_CH1",
+    "sample_uid": "SAMPLE_001",
+    "collect_time": "2026-06-05T10:30:00+08:00",
+    "device_id": "DEVICE_001",
+    "channel_name": "通道1",
+    "mic_id": "MIC-01",
+    "source_audio_url": "http://数据方服务器/audio/SAMPLE_001/ch1.wav",
+    "linux_save_path": "/home/hzjq/ml_pipeline/data/cable_voiceprint/SAMPLE_001/ch1.wav",
+    "manual_annotation": {
+      "is_labeled": true,
+      "is_fault": true,
+      "fault_type": "内源故障",
+      "fault_label": "局部放电",
+      "fault_severity": "warning",
+      "labeler_name": "张三"
+    }
+  }'
+```
+
+第 2、3、4 通道只需要把 URL 里的最后一位通道号、`request_id`、`channel_name`、`mic_id`、`source_audio_url` 和 `linux_save_path` 换成对应通道即可。
 
 ```bash
 curl -X POST "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples" \

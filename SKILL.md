@@ -35,11 +35,13 @@ POST http://192.168.10.116:8000/api/v1/cable-voiceprint/samples
 ```text
 主机：192.168.10.116
 端口：3306
-数据库：noise_classification
+历史环境数据库：noise_classification
+电缆声纹新数据库：电缆声纹检测库
 用户：remote_user
 ```
 
 可用环境变量覆盖：`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`。
+电缆声纹新库名可用 `CABLE_MYSQL_DB` 覆盖，默认是 `电缆声纹检测库`。
 
 ## 常用命令
 
@@ -79,31 +81,62 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py environment-dashboard-cn --output /Users/a1111/mysql/环境声音前端展示数据_20260604.json
 ```
 
-展示数据方实时接入样本列表：
+新上传分支：查询某个样本当前 4 个通道是否已经上传：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py cable-channel-status SAMPLE_ID
+```
+
+新上传分支：上传单个通道 JSON。这个命令会先查通道状态，如果该通道已经存在则跳过，避免重复上传。写入目标是 MySQL 中文库 `电缆声纹检测库` 和 TDengine 中文库 `电缆声纹时序库`：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py upload-channel SAMPLE_ID 1 /path/to/channel_1.json
+```
+
+新上传分支：一次性提交样本 JSON：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py upload-sample /path/to/sample.json
+```
+
+新上传分支：查询中文库里的样本、通道、人工标注、算法结果和前端资源：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py cable-sample-status SAMPLE_ID
+```
+
+新上传分支：算法结果回写到中文库 `voiceprint_model_result`。默认先试运行，确认写库时加 `--commit`：
+
+```bash
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-cable-result /path/to/result.json
+python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-cable-result /path/to/result.json --commit
+```
+
+旧实时表分支：展示旧实时接入样本列表。这个分支读取 `noise_classification.realtime_*`，不要用于新的电缆声纹入库：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --limit 50
 ```
 
-按设备、站点、状态筛选样本列表：
+旧实时表分支：按设备、站点、状态筛选样本列表：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py list-samples --device-id 设备编号 --site-code 站点编号 --status 待处理
 ```
 
-校验数据方 JSON 配置文件：
+旧字段口径：校验数据方 JSON 配置文件。新上传分支的 JSON 以 `upload-channel` / `upload-sample` 实际接口校验为准：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py validate-manifest /path/to/manifest.json
 ```
 
-试运行入库，不写数据库：
+旧实时表分支：试运行入库，不写数据库。这个命令写入旧库 `noise_classification.realtime_*`，新的电缆声纹上传不要使用它：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py ingest-manifest /path/to/manifest.json
 ```
 
-确认入库：
+旧实时表分支：确认入库：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py ingest-manifest /path/to/manifest.json --commit
@@ -115,19 +148,19 @@ python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py pending-for-inference --limit 20
 ```
 
-试运行算法结果回写，不写数据库：
+旧实时表分支：试运行算法结果回写，不写数据库：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-result /path/to/result.json
 ```
 
-确认算法结果回写：
+旧实时表分支：确认算法结果回写：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py submit-result /path/to/result.json --commit
 ```
 
-查询数据方前端单条样本展示数据：
+旧实时表分支：查询数据方前端单条样本展示数据：
 
 ```bash
 python3 /Users/a1111/.codex/skills/frontend-db-dashboard/scripts/query_frontend_data.py sample-display SAMPLE_ID
@@ -155,13 +188,13 @@ python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.
 2. 用户要看数据库整体内容时，运行 `database-overview`。
 3. 用户要看完整历史大屏统计时，运行 `dashboard`。
 4. 用户要给前端一个类似“环境声音数据库”大屏的数据源时，运行 `environment-dashboard-cn`；它只返回中文字段的环境声音数据，包含 `汇总`、`大类别`、`环境声音TOP10`、`小类别数量统计`。
-5. 用户要看数据方接入样本列表时，运行 `list-samples` 或 `realtime`，不需要提供 `sample_uid`。
-6. 用户给出某个 `sample_uid` 时，运行 `sample-display SAMPLE_ID`，返回音频、频谱、波形、算法结果、故障结果和前端展示摘要。
-7. 接到数据方字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
-8. 数据方给 JSON 后，先运行 `validate-manifest`，确认必填字段、4 通道结构和音频访问地址。
-9. 入库前默认运行 `ingest-manifest` 试运行；只有用户明确要写库时才加 `--commit`。
-10. 算法需要数据时，运行 `pending-for-inference`，返回音频路径、音频访问地址、采样参数、4 通道信息和现场环境。
-11. 算法完成后，用 `submit-result` 校验结果；只有用户明确要写库时才加 `--commit`。
+5. 用户要上传新的电缆声纹数据时，优先运行 `upload-channel` 或 `upload-sample`，不要运行 `ingest-manifest`。
+6. 用户要看新中文库样本状态时，运行 `cable-sample-status SAMPLE_ID`。
+7. 用户要把算法诊断结果写回新中文库时，运行 `submit-cable-result`，确认写库时加 `--commit`。
+8. 用户要看旧实时表样本列表时，才运行 `list-samples` 或 `realtime`。
+9. 用户给出旧实时表里的 `sample_uid` 时，运行 `sample-display SAMPLE_ID`。
+10. 接到数据方字段、JSON、接口或配置文件需求时，先读取 `references/frontend_db_schema.md`。
+11. 只有明确处理旧实时表时，才使用 `validate-manifest`、`ingest-manifest`、`pending-for-inference`、`submit-result`。
 12. 用户询问数据方如何传 wav 文件、如何从数据方文件服务器下载 wav、如何调用新中文库接口或如何构造请求 JSON 时，读取 `references/cable_voiceprint_realtime_api.md`。
 
 ## 字段口径

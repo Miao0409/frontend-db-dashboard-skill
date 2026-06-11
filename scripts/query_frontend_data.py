@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import sys
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 try:
     import mysql.connector
@@ -142,6 +145,16 @@ RESULT_REQUIRED_FIELDS = [
     "confidence_score",
 ]
 
+CABLE_SAMPLE_API_BASE = os.getenv(
+    "CABLE_VOICEPRINT_SAMPLE_API_BASE",
+    "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples",
+)
+CABLE_SAMPLE_API_URL = os.getenv(
+    "CABLE_VOICEPRINT_API_URL",
+    "http://192.168.10.116:8000/api/v1/cable-voiceprint/samples",
+)
+CABLE_MYSQL_DB = os.getenv("CABLE_MYSQL_DB", "电缆声纹检测库")
+
 STATUS_TO_DB = {
     "待处理": "QUEUED",
     "已上传": "UPLOADED",
@@ -168,6 +181,18 @@ def db_config() -> dict[str, Any]:
         "user": os.getenv("DB_USER", "remote_user"),
         "password": os.getenv("DB_PASSWORD", "VoicePrint2025!"),
         "database": os.getenv("DB_NAME", "noise_classification"),
+        "ssl_disabled": os.getenv("DB_SSL_DISABLED", "true").lower() != "false",
+    }
+
+
+def cable_db_config() -> dict[str, Any]:
+    return {
+        "host": os.getenv("DB_HOST", "192.168.10.116"),
+        "port": int(os.getenv("DB_PORT", "3306")),
+        "user": os.getenv("DB_USER", "remote_user"),
+        "password": os.getenv("DB_PASSWORD", "VoicePrint2025!"),
+        "database": CABLE_MYSQL_DB,
+        "ssl_disabled": os.getenv("DB_SSL_DISABLED", "true").lower() != "false",
     }
 
 
@@ -179,8 +204,65 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def mysql_datetime_text(value: Any | None = None) -> str:
+    if value in (None, ""):
+        dt = datetime.now()
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text.replace("T", " ").split("+", 1)[0]
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt.isoformat(sep=" ", timespec="milliseconds")
+
+
 def print_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+
+
+def http_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+    token: str | None = None,
+    timeout: int = 60,
+) -> dict[str, Any]:
+    body = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False, default=json_default).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(url, data=body, method=method.upper(), headers=headers)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            data = json.loads(raw) if raw else {}
+            if isinstance(data, dict):
+                return {"http_status": response.status, **data}
+            return {"http_status": response.status, "data": data}
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            data = {"response_text": raw}
+        if isinstance(data, dict):
+            return {"http_status": exc.code, "success": False, **data}
+        return {"http_status": exc.code, "success": False, "data": data}
+    except URLError as exc:
+        return {"success": False, "error": "request_failed", "message": str(exc.reason)}
+
+
+def cable_channel_urls(base_url: str, sample_uid: str, channel_no: int = 1) -> tuple[str, str]:
+    encoded_uid = quote(sample_uid, safe="")
+    base = base_url.rstrip("/")
+    return f"{base}/{encoded_uid}/channels", f"{base}/{encoded_uid}/channels/{channel_no}"
 
 
 def load_json_records(path: str) -> list[dict[str, Any]]:
@@ -200,6 +282,13 @@ def load_json_records(path: str) -> list[dict[str, Any]]:
     if bad:
         raise ValueError(f"JSON 第 {bad[0]} 条不是对象")
     return records
+
+
+def load_json_object(path: str) -> dict[str, Any]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("JSON 顶层必须是对象")
+    return data
 
 
 def to_json_text(value: Any) -> str | None:
@@ -924,6 +1013,271 @@ class DbClient:
                 resources["feature_uri"] = rows[0]["feature_path"]
         return resources
 
+    def cable_channel_status(
+        self,
+        sample_uid: str,
+        base_url: str = CABLE_SAMPLE_API_BASE,
+        token: str | None = None,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        status_url, _ = cable_channel_urls(base_url, sample_uid)
+        return http_json("GET", status_url, token=token, timeout=timeout)
+
+    def upload_cable_channel(
+        self,
+        sample_uid: str,
+        channel_no: int,
+        payload: dict[str, Any],
+        base_url: str = CABLE_SAMPLE_API_BASE,
+        token: str | None = None,
+        timeout: int = 60,
+        force: bool = False,
+        check_only: bool = False,
+    ) -> dict[str, Any]:
+        status = self.cable_channel_status(sample_uid, base_url, token, timeout)
+        exists = False
+        for channel in status.get("channels", []) if isinstance(status.get("channels"), list) else []:
+            if isinstance(channel, dict) and int(channel.get("channel_no") or 0) == channel_no:
+                exists = bool(channel.get("exists"))
+                break
+        if check_only:
+            return {"ok": True, "action": "check_only", "sample_uid": sample_uid, "channel_no": channel_no, "status": status}
+        if exists and not force:
+            return {
+                "ok": True,
+                "action": "skip_existing_channel",
+                "sample_uid": sample_uid,
+                "channel_no": channel_no,
+                "message": "该通道已经上传，未重复调用写库接口。如需覆盖请加 --force。",
+                "status": status,
+            }
+        _, upload_url = cable_channel_urls(base_url, sample_uid, channel_no)
+        result = http_json("POST", upload_url, payload=payload, token=token, timeout=timeout)
+        return {
+            "ok": bool(result.get("success", result.get("http_status") == 200)),
+            "action": "upload_channel",
+            "sample_uid": sample_uid,
+            "channel_no": channel_no,
+            "target_database": CABLE_MYSQL_DB,
+            "response": result,
+        }
+
+    def upload_cable_sample(
+        self,
+        payload: dict[str, Any],
+        api_url: str = CABLE_SAMPLE_API_URL,
+        token: str | None = None,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        result = http_json("POST", api_url, payload=payload, token=token, timeout=timeout)
+        return {
+            "ok": bool(result.get("success", result.get("http_status") == 200)),
+            "action": "upload_sample",
+            "sample_uid": payload.get("sample_uid"),
+            "target_database": CABLE_MYSQL_DB,
+            "response": result,
+        }
+
+    def cable_sample_status(self, sample_uid: str) -> dict[str, Any]:
+        conn = mysql.connector.connect(**cable_db_config())
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM voiceprint_sample WHERE sample_uid = %s", (sample_uid,))
+            sample = cur.fetchone()
+            cur.execute(
+                """
+                SELECT *
+                FROM voiceprint_audio_file
+                WHERE sample_uid = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sample_uid,),
+            )
+            audio = cur.fetchone()
+            cur.execute(
+                """
+                SELECT *
+                FROM voiceprint_channel
+                WHERE sample_uid = %s
+                ORDER BY channel_no
+                """,
+                (sample_uid,),
+            )
+            channels = cur.fetchall()
+            cur.execute(
+                """
+                SELECT *
+                FROM voiceprint_enterprise_annotation
+                WHERE sample_uid = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sample_uid,),
+            )
+            annotation = cur.fetchone()
+            cur.execute(
+                """
+                SELECT *
+                FROM voiceprint_model_result
+                WHERE sample_uid = %s
+                ORDER BY inference_time DESC, id DESC
+                """,
+                (sample_uid,),
+            )
+            model_results = cur.fetchall()
+            cur.execute(
+                """
+                SELECT *
+                FROM voiceprint_feature_resource
+                WHERE sample_uid = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sample_uid,),
+            )
+            features = cur.fetchone()
+            cur.execute(
+                """
+                SELECT channel_no, channel_name, mic_id, channel_file_path, upload_status,
+                       sample_rate, bit_depth, duration_sec, source_audio_url
+                FROM voiceprint_channel_upload
+                WHERE sample_uid = %s
+                ORDER BY channel_no
+                """,
+                (sample_uid,),
+            )
+            uploaded_channels = cur.fetchall()
+            cur.close()
+        finally:
+            conn.close()
+
+        if not sample:
+            received = [int(row["channel_no"]) for row in uploaded_channels]
+            return {
+                "样本编号": sample_uid,
+                "目标数据库": CABLE_MYSQL_DB,
+                "样本状态": "未完成入库",
+                "已上传通道": uploaded_channels,
+                "缺失通道": [channel_no for channel_no in range(1, 5) if channel_no not in received],
+            }
+
+        return {
+            "样本编号": sample_uid,
+            "目标数据库": CABLE_MYSQL_DB,
+            "样本状态": sample.get("process_status"),
+            "样本信息": {
+                "采集时间": sample.get("collect_time"),
+                "设备编号": sample.get("device_id"),
+                "设备名称": sample.get("device_name"),
+                "设备位置": sample.get("device_location"),
+                "站点编号": sample.get("site_code"),
+                "站点名称": sample.get("site_name"),
+                "现场环境": sample.get("site_environment"),
+            },
+            "采样信息": {
+                "采样率": sample.get("sample_rate"),
+                "位深": sample.get("bit_depth"),
+                "时长秒": sample.get("duration_sec"),
+                "通道数": sample.get("channel_count"),
+            },
+            "音频文件": {
+                "文件名": audio.get("file_name") if audio else None,
+                "文件路径": audio.get("file_path") if audio else None,
+                "Linux文件路径": audio.get("linux_file_path") if audio else None,
+                "前端播放地址": audio.get("audio_uri") if audio else None,
+                "文件校验值": audio.get("file_sha256") if audio else sample.get("file_sha256"),
+            },
+            "四通道信息": [
+                {
+                    "通道号": row.get("channel_no"),
+                    "通道名称": row.get("channel_name"),
+                    "麦克风编号": row.get("mic_id"),
+                    "通道文件路径": row.get("channel_file_path"),
+                    "通道播放地址": row.get("channel_audio_uri"),
+                    "TDengine表名": row.get("tdengine_table"),
+                }
+                for row in channels
+            ],
+            "人工标注": {
+                "是否已标注": annotation.get("is_labeled") if annotation else None,
+                "是否故障": annotation.get("is_fault") if annotation else None,
+                "故障类型": annotation.get("fault_type") if annotation else None,
+                "故障标签": annotation.get("fault_label") if annotation else None,
+                "故障等级": annotation.get("fault_severity") if annotation else None,
+                "标注人员": annotation.get("labeler_name") if annotation else None,
+                "标注时间": annotation.get("label_time") if annotation else None,
+                "标注备注": annotation.get("annotation_remark") if annotation else None,
+            },
+            "算法结果": model_results,
+            "前端资源": features,
+            "分通道上传缓存": uploaded_channels,
+        }
+
+    def submit_cable_result_records(self, records: list[dict[str, Any]], commit: bool = False) -> dict[str, Any]:
+        errors: list[dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
+        for idx, record in enumerate(records, start=1):
+            missing = [field for field in RESULT_REQUIRED_FIELDS if record.get(field) in (None, "")]
+            if missing:
+                errors.append({"index": idx, "sample_uid": record.get("sample_uid"), "missing_fields": missing})
+        if errors:
+            return {"ok": False, "commit": commit, "target_database": CABLE_MYSQL_DB, "errors": errors, "actions": actions}
+
+        conn = mysql.connector.connect(**cable_db_config())
+        try:
+            cur = conn.cursor(dictionary=True)
+            for record in records:
+                sample_uid = record["sample_uid"]
+                cur.execute("SELECT id FROM voiceprint_sample WHERE sample_uid = %s", (sample_uid,))
+                if not cur.fetchone():
+                    errors.append({"sample_uid": sample_uid, "error": "新中文库 voiceprint_sample 中不存在该样本，请先完成样本/通道入库"})
+                    continue
+
+                topk = record.get("topk_result_json") or record.get("topk") or record.get("probabilities")
+                row = {
+                    "sample_uid": sample_uid,
+                    "model_name": record.get("model_name"),
+                    "model_version": record.get("model_version"),
+                    "algorithm_result": record.get("algorithm_result"),
+                    "confidence_score": record.get("confidence_score"),
+                    "topk_result_json": to_json_text(topk),
+                    "inference_time": mysql_datetime_text(record.get("inference_time")),
+                    "need_review": parse_bool(record.get("need_review")) or 0,
+                    "result_explain": record.get("result_explain"),
+                }
+                actions.append({"sample_uid": sample_uid, "action": "insert voiceprint_model_result"})
+                actions.append({"sample_uid": sample_uid, "action": "update voiceprint_sample.process_status=INFERRED"})
+                if commit:
+                    cur.execute(
+                        """
+                        INSERT INTO voiceprint_model_result (
+                            sample_uid, model_name, model_version, algorithm_result, confidence_score,
+                            topk_result_json, inference_time, need_review, result_explain
+                        ) VALUES (
+                            %(sample_uid)s, %(model_name)s, %(model_version)s, %(algorithm_result)s, %(confidence_score)s,
+                            %(topk_result_json)s, %(inference_time)s, %(need_review)s, %(result_explain)s
+                        )
+                        """,
+                        row,
+                    )
+                    cur.execute(
+                        """
+                        UPDATE voiceprint_sample
+                        SET process_status = 'INFERRED', process_stage = 'algorithm_inferred'
+                        WHERE sample_uid = %s
+                        """,
+                        (sample_uid,),
+                    )
+            if errors:
+                conn.rollback()
+                return {"ok": False, "commit": commit, "target_database": CABLE_MYSQL_DB, "errors": errors, "actions": actions}
+            if commit:
+                conn.commit()
+            return {"ok": True, "commit": commit, "target_database": CABLE_MYSQL_DB, "total_records": len(records), "actions": actions}
+        finally:
+            conn.close()
+
     def database_overview(self, recent_limit: int = 10) -> dict[str, Any]:
         tables = [
             "noise_classification_db",
@@ -1032,40 +1386,69 @@ def main() -> None:
     env_dash.add_argument("--top-limit", type=int, default=10)
     env_dash.add_argument("--output", help="可选：把结果保存到指定 JSON 文件")
 
-    real = sub.add_parser("realtime", help="展示企业实时接入样本列表")
+    real = sub.add_parser("realtime", help="旧库：展示数据方实时接入样本列表")
     real.add_argument("--limit", type=int, default=50)
     real.add_argument("--device-id")
     real.add_argument("--site-code")
     real.add_argument("--status")
     real.add_argument("--sample-uid")
 
-    list_samples = sub.add_parser("list-samples", help="展示数据库中的实时样本列表，等同 realtime")
+    list_samples = sub.add_parser("list-samples", help="旧库：展示数据库中的实时样本列表，等同 realtime")
     list_samples.add_argument("--limit", type=int, default=50)
     list_samples.add_argument("--device-id")
     list_samples.add_argument("--site-code")
     list_samples.add_argument("--status")
     list_samples.add_argument("--sample-uid")
 
-    detail_parser = sub.add_parser("detail", help="查询单条样本数据库详情")
+    detail_parser = sub.add_parser("detail", help="旧库：查询单条样本数据库详情")
     detail_parser.add_argument("sample_uid")
 
-    sample_display = sub.add_parser("sample-display", help="按 sample_uid 返回前端展示数据")
+    sample_display = sub.add_parser("sample-display", help="旧库：按 sample_uid 返回前端展示数据")
     sample_display.add_argument("sample_uid")
 
     validate = sub.add_parser("validate-manifest", help="校验数据中心 JSON 配置文件")
     validate.add_argument("json_path")
     validate.add_argument("--check-files", action="store_true")
 
-    ingest = sub.add_parser("ingest-manifest", help="试运行或确认入库数据中心 JSON")
+    ingest = sub.add_parser("ingest-manifest", help="旧库：试运行或确认入库数据中心 JSON，会写入 noise_classification.realtime_*")
     ingest.add_argument("json_path")
     ingest.add_argument("--commit", action="store_true")
 
     pending = sub.add_parser("pending-for-inference", help="给算法查询待推理样本")
     pending.add_argument("--limit", type=int, default=20)
 
-    submit = sub.add_parser("submit-result", help="试运行或确认回写算法结果")
+    submit = sub.add_parser("submit-result", help="旧库：试运行或确认回写算法结果，会写入 noise_classification.realtime_*")
     submit.add_argument("json_path")
     submit.add_argument("--commit", action="store_true")
+
+    cable_channel_status = sub.add_parser("cable-channel-status", help="新中文库：查询样本 4 个通道的上传状态")
+    cable_channel_status.add_argument("sample_uid")
+    cable_channel_status.add_argument("--base-url", default=CABLE_SAMPLE_API_BASE)
+    cable_channel_status.add_argument("--timeout", type=int, default=60)
+    cable_channel_status.add_argument("--token", default=os.getenv("INGEST_TOKEN"))
+
+    upload_channel = sub.add_parser("upload-channel", help="新中文库：上传单个通道 JSON，自动避免重复上传")
+    upload_channel.add_argument("sample_uid")
+    upload_channel.add_argument("channel_no", type=int, choices=[1, 2, 3, 4])
+    upload_channel.add_argument("json_path")
+    upload_channel.add_argument("--base-url", default=CABLE_SAMPLE_API_BASE)
+    upload_channel.add_argument("--timeout", type=int, default=60)
+    upload_channel.add_argument("--token", default=os.getenv("INGEST_TOKEN"))
+    upload_channel.add_argument("--force", action="store_true", help="即使通道已存在，也继续调用上传接口")
+    upload_channel.add_argument("--check-only", action="store_true", help="只查询状态，不上传")
+
+    upload_sample = sub.add_parser("upload-sample", help="新中文库：一次性提交样本 JSON 到电缆声纹接口")
+    upload_sample.add_argument("json_path")
+    upload_sample.add_argument("--url", default=CABLE_SAMPLE_API_URL)
+    upload_sample.add_argument("--timeout", type=int, default=60)
+    upload_sample.add_argument("--token", default=os.getenv("INGEST_TOKEN"))
+
+    cable_sample_status = sub.add_parser("cable-sample-status", help="新中文库：查询样本、通道、人工标注、算法结果和前端资源")
+    cable_sample_status.add_argument("sample_uid")
+
+    cable_submit = sub.add_parser("submit-cable-result", help="新中文库：试运行或确认回写算法结果到 voiceprint_model_result")
+    cable_submit.add_argument("json_path")
+    cable_submit.add_argument("--commit", action="store_true")
 
     sub.add_parser("health", help="检查数据库连接")
 
@@ -1098,6 +1481,27 @@ def main() -> None:
         print_json(client.pending_for_inference(args.limit))
     elif args.command == "submit-result":
         print_json(client.submit_result_records(load_json_records(args.json_path), args.commit))
+    elif args.command == "cable-channel-status":
+        print_json(client.cable_channel_status(args.sample_uid, args.base_url, args.token, args.timeout))
+    elif args.command == "upload-channel":
+        print_json(
+            client.upload_cable_channel(
+                args.sample_uid,
+                args.channel_no,
+                load_json_object(args.json_path),
+                args.base_url,
+                args.token,
+                args.timeout,
+                args.force,
+                args.check_only,
+            )
+        )
+    elif args.command == "upload-sample":
+        print_json(client.upload_cable_sample(load_json_object(args.json_path), args.url, args.token, args.timeout))
+    elif args.command == "cable-sample-status":
+        print_json(client.cable_sample_status(args.sample_uid))
+    elif args.command == "submit-cable-result":
+        print_json(client.submit_cable_result_records(load_json_records(args.json_path), args.commit))
 
 
 if __name__ == "__main__":
