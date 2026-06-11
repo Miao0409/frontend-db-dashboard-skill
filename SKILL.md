@@ -1,6 +1,6 @@
 ---
 name: frontend-db-dashboard
-description: Work with the cable voiceprint data pipeline and MySQL database. Use when Codex needs to validate data-provider JSON manifests, ingest audio index metadata, query pending samples for inference, submit algorithm results, return frontend sample display data including audio and spectrum resources, query dashboard statistics, or explain the cable voiceprint database/API field design.
+description: Work with the cable voiceprint data pipeline, bundled demo fault-diagnosis algorithm, and MySQL database. Use when Codex needs to validate data-provider JSON manifests, ingest audio index metadata, query pending samples for inference, train or run the cable voiceprint demo classifier, generate fault labels/probabilities/waveform/spectrum resources, submit algorithm results, return frontend sample display data including audio and spectrum resources, query dashboard statistics, or explain the cable voiceprint database/API field design.
 ---
 
 # 电缆声纹数据链路
@@ -225,4 +225,24 @@ python3 /home/hzjq/ml_pipeline/process/test_cable_voiceprint_four_mono_protocol.
 
 ```text
 /Users/a1111/.codex/skills/frontend-db-dashboard/references/cable_voiceprint_realtime_api.md
+```
+
+## Bundled Algorithm Demo
+
+Use `scripts/voiceprint_algorithm_demo.py` when the task requires running the cable voiceprint demo algorithm, training the 9-class lightweight classifier, generating a database-compatible result JSON, creating waveform/spectrum/feature resources, or submitting algorithm results.
+
+Common commands:
+
+```bash
+python3 scripts/voiceprint_algorithm_demo.py train --data-dir /path/to/data --model-dir /path/to/models/voiceprint_demo --max-per-class 30
+python3 scripts/voiceprint_algorithm_demo.py infer-one --audio /path/to/sample.wav --sample-uid SAMPLE_001 --model-dir /path/to/models/voiceprint_demo --output-dir /path/to/outputs --result-json /path/to/result.json
+python3 scripts/voiceprint_algorithm_demo.py infer-pending --pending-json /path/to/pending_samples.json --model-dir /path/to/models/voiceprint_demo --output-dir /path/to/outputs --result-json /path/to/results.json
+python3 scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json
+python3 scripts/voiceprint_algorithm_demo.py submit-result /path/to/results.json --commit
+```
+
+Only add `--commit` when the user explicitly asks to write to MySQL. For full algorithm inputs, outputs, labels, and result JSON fields, read:
+
+```text
+references/voiceprint_algorithm_demo.md
 ```

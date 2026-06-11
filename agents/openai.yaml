@@ -1,4 +1,4 @@
 interface:
-  display_name: "电缆声纹数据链路"
-  short_description: "展示声纹数据库内容、校验 JSON、说明 4 通道实时接口并返回前端展示数据"
-  default_prompt: "Use $frontend-db-dashboard to show cable voiceprint database contents, validate JSON, explain the 4-channel ingest API, or return frontend sample display data."
+  display_name: "Cable Voiceprint Data Pipeline"
+  short_description: "Validate voiceprint manifests, query MySQL samples, run the bundled demo classifier, and submit algorithm results."
+  default_prompt: "Use $frontend-db-dashboard to validate cable voiceprint JSON, query pending samples, run the demo fault-diagnosis algorithm, submit results, or return frontend sample display data."
